@@ -1,0 +1,8 @@
+// Custom link color for dark mode
+a {
+  color: #fbc531 !important;
+
+  &:hover {
+    color: #e1b12c !important;
+  }
+}
