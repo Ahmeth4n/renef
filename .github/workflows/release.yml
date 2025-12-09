@@ -1,0 +1,395 @@
+name: Release Build
+
+on:
+  workflow_dispatch:
+
+env:
+  CAPSTONE_VERSION: 5.0.3
+  ASIO_VERSION: 1-30-2
+  LUA_VERSION: 5.4.7
+  NDK_VERSION: r26b
+
+jobs:
+  validate:
+    name: Validate Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.extract.outputs.version }}
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract version from CMakeLists.txt
+        id: extract
+        run: |
+          CMAKE_VERSION=$(grep -oP 'project\(renef VERSION \K[0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt)
+          echo "version=$CMAKE_VERSION" >> $GITHUB_OUTPUT
+          echo "Version from CMakeLists.txt: $CMAKE_VERSION"
+
+      - name: Delete existing tag and release
+        run: |
+          VERSION="${{ steps.extract.outputs.version }}"
+          if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+            echo "Deleting existing tag v$VERSION"
+            git push origin :refs/tags/v$VERSION || true
+            git tag -d v$VERSION || true
+          fi
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "Deleting existing release v$VERSION"
+            gh release delete "v$VERSION" -y || true
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-clients:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x64
+            build_android: true
+          - os: macos-15-large
+            platform: macos-x64
+            build_android: false
+          - os: macos-latest
+            platform: macos-arm64
+            build_android: false
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Android NDK
+        if: matrix.build_android == true
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+          add-to-path: true
+
+      - name: Install dependencies (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake libreadline-dev
+
+      - name: Install dependencies (macOS)
+        if: startsWith(matrix.os, 'macos')
+        run: brew install readline cmake
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: external/
+          key: ${{ matrix.platform }}-deps-${{ env.CAPSTONE_VERSION }}-${{ env.LUA_VERSION }}-${{ env.ASIO_VERSION }}
+          restore-keys: ${{ matrix.platform }}-deps-
+
+      - name: Setup dependencies
+        run: make setup
+
+      - name: Build all targets
+        if: matrix.build_android == true
+        run: |
+          export NDK=$ANDROID_NDK_ROOT
+          make BUILD_MODE=release
+
+      - name: Build client (macOS)
+        if: startsWith(matrix.os, 'macos')
+        run: make client BUILD_MODE=release
+
+      - name: Verify Linux client
+        if: matrix.platform == 'linux-x64'
+        run: |
+          ls -lh build/renef
+          file build/renef
+          if ! file build/renef | grep -q "x86-64"; then
+            echo "ERROR: Linux client is not x86-64"
+            exit 1
+          fi
+          ldd build/renef
+
+      - name: Verify Android artifacts
+        if: matrix.build_android == true
+        run: |
+          ls -lh build/android/
+          file build/android/renef_server
+          file build/android/libagent.so
+          if ! file build/android/renef_server | grep -q "aarch64"; then
+            echo "ERROR: renef_server is not ARM64"
+            exit 1
+          fi
+          if ! file build/android/libagent.so | grep -q "aarch64"; then
+            echo "ERROR: libagent.so is not ARM64"
+            exit 1
+          fi
+
+      - name: Verify macOS client
+        if: startsWith(matrix.os, 'macos')
+        run: |
+          ls -lh build/renef
+          file build/renef
+          lipo -info build/renef
+          otool -L build/renef
+
+      - name: Upload Linux client
+        if: matrix.platform == 'linux-x64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-client
+          path: build/renef
+          retention-days: 1
+
+      - name: Upload Android artifacts
+        if: matrix.build_android == true
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-artifacts
+          path: |
+            build/android/renef_server
+            build/android/libagent.so
+          retention-days: 1
+
+      - name: Upload macOS x64 client
+        if: matrix.platform == 'macos-x64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-x64-client
+          path: build/renef
+          retention-days: 1
+
+      - name: Upload macOS ARM64 client
+        if: matrix.platform == 'macos-arm64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64-client
+          path: build/renef
+          retention-days: 1
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [validate, build-clients]
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Display artifact structure
+        run: ls -R artifacts/
+
+      - name: Prepare release packages
+        run: |
+          VERSION="${{ needs.validate.outputs.version }}"
+          RELEASE_DIR="release_packages"
+          mkdir -p $RELEASE_DIR
+          mkdir -p staging/{linux,macos-x64,macos-arm64,android}
+
+          cp artifacts/linux-client/renef staging/linux/renef 2>/dev/null || true
+          cp artifacts/macos-x64-client/renef staging/macos-x64/renef 2>/dev/null || true
+          cp artifacts/macos-arm64-client/renef staging/macos-arm64/renef 2>/dev/null || true
+          cp artifacts/android-artifacts/renef_server staging/android/ 2>/dev/null || true
+          cp artifacts/android-artifacts/libagent.so staging/android/ 2>/dev/null || true
+
+          chmod +x staging/linux/renef 2>/dev/null || true
+          chmod +x staging/macos-x64/renef 2>/dev/null || true
+          chmod +x staging/macos-arm64/renef 2>/dev/null || true
+          chmod +x staging/android/renef_server 2>/dev/null || true
+
+          if [ -f staging/linux/renef ]; then
+            mkdir -p renef-linux-x64
+            cp staging/linux/renef renef-linux-x64/
+            cp -r scripts renef-linux-x64/ 2>/dev/null || true
+            cp README.md LICENSE renef-linux-x64/
+            tar czf $RELEASE_DIR/renef-v${VERSION}-linux-x64.tar.gz renef-linux-x64/
+          fi
+
+          if [ -f staging/macos-x64/renef ]; then
+            mkdir -p renef-macos-x64
+            cp staging/macos-x64/renef renef-macos-x64/
+            cp -r scripts renef-macos-x64/ 2>/dev/null || true
+            cp README.md LICENSE renef-macos-x64/
+            tar czf $RELEASE_DIR/renef-v${VERSION}-macos-x64.tar.gz renef-macos-x64/
+          fi
+
+          if [ -f staging/macos-arm64/renef ]; then
+            mkdir -p renef-macos-arm64
+            cp staging/macos-arm64/renef renef-macos-arm64/
+            cp -r scripts renef-macos-arm64/ 2>/dev/null || true
+            cp README.md LICENSE renef-macos-arm64/
+            tar czf $RELEASE_DIR/renef-v${VERSION}-macos-arm64.tar.gz renef-macos-arm64/
+          fi
+
+          if [ -f staging/android/renef_server ]; then
+            mkdir -p renef-android-arm64
+            cp staging/android/renef_server renef-android-arm64/
+            cp staging/android/libagent.so renef-android-arm64/
+            cp README.md LICENSE renef-android-arm64/
+            tar czf $RELEASE_DIR/renef-v${VERSION}-android-arm64.tar.gz renef-android-arm64/
+          fi
+
+          mkdir -p renef-v${VERSION}-all/{linux,macos-x64,macos-arm64,android,scripts}
+          cp staging/linux/renef renef-v${VERSION}-all/linux/ 2>/dev/null || true
+          cp staging/macos-x64/renef renef-v${VERSION}-all/macos-x64/ 2>/dev/null || true
+          cp staging/macos-arm64/renef renef-v${VERSION}-all/macos-arm64/ 2>/dev/null || true
+          cp staging/android/renef_server renef-v${VERSION}-all/android/ 2>/dev/null || true
+          cp staging/android/libagent.so renef-v${VERSION}-all/android/ 2>/dev/null || true
+          cp -r scripts/* renef-v${VERSION}-all/scripts/ 2>/dev/null || true
+          cp README.md LICENSE renef-v${VERSION}-all/
+
+          cat > renef-v${VERSION}-all/INSTALL.txt <<EOF
+          Renef v${VERSION} - Installation Guide
+          =====================================
+
+          Platform-specific binaries:
+          - linux/renef                : Linux x64 client
+          - macos-x64/renef            : macOS Intel client
+          - macos-arm64/renef          : macOS Silicon (ARM64) client
+          - android/renef_server       : Android ARM64 server
+          - android/libagent.so        : Android ARM64 payload
+
+          Quick Start (Linux):
+          1. Extract archive
+          2. Push to Android device:
+             adb push android/renef_server /data/local/tmp/
+             adb push android/libagent.so /data/local/tmp/.r
+             adb shell chmod +x /data/local/tmp/renef_server
+          3. Setup port forwarding:
+             adb forward tcp:1907 localabstract:com.android.internal.os.RuntimeInit
+          4. Start server on device:
+             adb shell /data/local/tmp/renef_server
+          5. Run client:
+             ./linux/renef
+
+          For detailed documentation, visit: https://renef.io
+          EOF
+
+          tar czf $RELEASE_DIR/renef-v${VERSION}-all-platforms.tar.gz renef-v${VERSION}-all/
+
+          cd $RELEASE_DIR
+          sha256sum *.tar.gz *.zip 2>/dev/null > SHA256SUMS.txt || true
+          cd ..
+
+          ls -lh $RELEASE_DIR/
+
+      - name: Generate release notes
+        run: |
+          VERSION="${{ needs.validate.outputs.version }}"
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+
+          if [ -n "$PREV_TAG" ]; then
+            COMMITS=$(git log $PREV_TAG..HEAD --pretty=format:"- %s (%h)" --no-merges)
+          else
+            COMMITS=$(git log --pretty=format:"- %s (%h)" --no-merges | head -20)
+          fi
+
+          cat > release_notes.md <<EOF
+          ## Renef v${VERSION}
+
+          Dynamic Instrumentation Toolkit for Android ARM64
+
+          ### What's New
+
+          ${COMMITS}
+
+          ### Downloads
+
+          **Platform-specific releases:**
+          - \`renef-v${VERSION}-linux-x64.tar.gz\` - Linux x64 client + scripts
+          - \`renef-v${VERSION}-macos-x64.tar.gz\` - macOS Intel client + scripts
+          - \`renef-v${VERSION}-macos-arm64.tar.gz\` - macOS Silicon client + scripts
+          - \`renef-v${VERSION}-android-arm64.tar.gz\` - Android server + payload
+
+          **All-in-one release:**
+          - \`renef-v${VERSION}-all-platforms.tar.gz\` - All platforms + scripts
+
+          ### Verification
+
+          Verify downloads using SHA256 checksums in \`SHA256SUMS.txt\`
+
+          ### Quick Start
+
+          \`\`\`bash
+          tar xzf renef-v${VERSION}-linux-x64.tar.gz
+          cd renef-linux-x64
+
+          adb push ../renef-android-arm64/renef_server /data/local/tmp/
+          adb push ../renef-android-arm64/libagent.so /data/local/tmp/.r
+          adb shell chmod +x /data/local/tmp/renef_server
+
+          adb forward tcp:1907 localabstract:com.android.internal.os.RuntimeInit
+          adb shell /data/local/tmp/renef_server &
+          ./renef
+          \`\`\`
+
+          ### Documentation
+
+          - [Full Documentation](https://renef.io)
+          - [Installation Guide](https://renef.io/docs/installation.html)
+          - [Getting Started](https://renef.io/docs/getting-started.html)
+          - [API Reference](https://renef.io/docs/api/)
+
+          ### System Requirements
+
+          **Client:**
+          - Linux (x64) or macOS (Intel/Silicon)
+          - libreadline (Linux/macOS)
+
+          **Target Device:**
+          - Android 5.0+ (API 21+)
+          - ARM64 architecture
+          - Root access (for injection)
+
+          ### Dependencies
+
+          Built with:
+          - Capstone ${{ env.CAPSTONE_VERSION }}
+          - Lua ${{ env.LUA_VERSION }}
+          - ASIO ${{ env.ASIO_VERSION }}
+          - Android NDK ${{ env.NDK_VERSION }}
+          EOF
+
+          cat release_notes.md
+
+      - name: Create git tag
+        run: |
+          VERSION="${{ needs.validate.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${VERSION}" -m "Release v${VERSION}"
+          git push origin "v${VERSION}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ needs.validate.outputs.version }}
+          name: Renef v${{ needs.validate.outputs.version }}
+          body_path: release_notes.md
+          draft: false
+          prerelease: false
+          files: |
+            release_packages/*.tar.gz
+            release_packages/*.zip
+            release_packages/SHA256SUMS.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Release summary
+        run: |
+          echo "Release v${{ needs.validate.outputs.version }} created successfully"
+          echo "Release URL: https://github.com/${{ github.repository }}/releases/tag/v${{ needs.validate.outputs.version }}"
+          ls -lh release_packages/
+          cat release_packages/SHA256SUMS.txt
