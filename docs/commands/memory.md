@@ -117,7 +117,7 @@ exec print(string.format("0x%X", mem.readU32(0x7f8a1c2b0)))
 exec mem.writeU32(0x7f8a1c2b0, 0xD503201F)
 ```
 
-See [Lua Memory API](../lua-api/memory.md) for full documentation.
+See [Lua Memory API](../api/memory.md) for full documentation.
 
 ---
 
