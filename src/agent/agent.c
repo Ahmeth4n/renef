@@ -25,6 +25,7 @@
 #include <signal.h>
 
 #include "core/globals.h"
+#include "core/cmd_registry.h"
 #include "hook/hook.h"
 #include "proc/proc.h"
 #include "handlers/handlers.h"
@@ -163,7 +164,6 @@ static void route_command(int client_fd, const char* cmd, size_t cmd_len) {
     }
 
     int use_capture = (filter[0] != '\0');
-    int output_fd = client_fd;
 
     if (use_capture) {
         capture_init();
@@ -185,85 +185,9 @@ static void route_command(int client_fd, const char* cmd, size_t cmd_len) {
     }
 
     const char* actual_cmd = main_cmd + 33;
-
     memmove(main_cmd, actual_cmd, strlen(actual_cmd) + 1);
 
-    if (strcmp(main_cmd, "list_apps") == 0) {
-        if (use_capture) {
-            FILE *fp = popen("pm list packages", "r");
-            if (fp) {
-                char line[256];
-                while (fgets(line, sizeof(line), fp)) {
-                    if (strncmp(line, "package:", 8) == 0) {
-                        capture_write(line + 8, strlen(line + 8));
-                    }
-                }
-                pclose(fp);
-            }
-        } else {
-            list_apps(client_fd);
-        }
-    }
-    else if (strncmp(main_cmd, "hook ", 5) == 0) {
-        handle_inspect_binary(client_fd, main_cmd + 5);
-    }
-    else if (strncmp(main_cmd, "eval ", 5) == 0) {
-        handle_eval(client_fd, main_cmd + 5);
-    }
-    else if (strncmp(main_cmd, "ms ", 3) == 0) {
-        handle_memscan(client_fd, main_cmd + 3);
-    }
-    else if (strcmp(main_cmd, "ping") == 0) {
-        const char* pong = "pong\n";
-        write(client_fd, pong, strlen(pong));
-    }
-    else if (strcmp(main_cmd, "unhook") == 0 || strcmp(main_cmd, "unhook all") == 0) {
-        int count = uninstall_all_hooks();
-        char response[128];
-        snprintf(response, sizeof(response), "Removed %d hook(s)\n", count);
-        write(client_fd, response, strlen(response));
-    }
-    else if (strncmp(main_cmd, "unhook ", 7) == 0) {
-        int hook_id = atoi(main_cmd + 7);
-        if (uninstall_hook(hook_id) == 0) {
-            char response[128];
-            snprintf(response, sizeof(response), "Hook %d removed\n", hook_id);
-            write(client_fd, response, strlen(response));
-        } else {
-            const char* error = "ERROR: Failed to remove hook\n";
-            write(client_fd, error, strlen(error));
-        }
-    }
-    else if (strcmp(main_cmd, "hooks") == 0) {
-        char response[1024];
-        int len = snprintf(response, sizeof(response), "Active hooks: %d\n", g_hook_count);
-        for (int i = 0; i < g_hook_count; i++) {
-            if (g_hooks[i].data.trampoline.target_addr != NULL) {
-                len += snprintf(response + len, sizeof(response) - len,
-                    "  [%d] target=%p\n", i, g_hooks[i].data.trampoline.target_addr);
-            } else {
-                len += snprintf(response + len, sizeof(response) - len,
-                    "  [%d] (removed)\n", i);
-            }
-        }
-        write(client_fd, response, len);
-    }
-    else if (strncmp(main_cmd, "sec ", 4) == 0) {
-        const char* lib_name = main_cmd + 4;
-        char* lib_path = find_library_path(lib_name);
-        if (lib_path) {
-            dump_elf_sections(client_fd, lib_path);
-            free(lib_path);
-        } else {
-            char err[256];
-            snprintf(err, sizeof(err), "ERROR: Library '%s' not found in process\n", lib_name);
-            write(client_fd, err, strlen(err));
-        }
-    }
-    else if (strncmp(main_cmd, "memdump ", 8) == 0) {
-        handle_memdump(client_fd, main_cmd + 8);
-    }
-    else {
+    if (!cmd_dispatch(client_fd, main_cmd)) {
         const char* error = "{\"success\":false,\"error\":\"Unknown command\"}\n";
         write(client_fd, error, strlen(error));
     }
@@ -406,6 +330,9 @@ void init(void) {
     LOGI("PID: %d", getpid());
     LOGI("UID: %d", getuid());
     LOGI("========================================");
+
+    register_builtin_commands();
+    LOGI("Builtin commands registered");
 
     g_lua_engine = lua_engine_create();
     if (g_lua_engine) {

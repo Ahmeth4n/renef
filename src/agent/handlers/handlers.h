@@ -12,4 +12,6 @@ void handle_memscan(int client_fd, const char* pattern);
 void handle_list_apps(int client_fd, const char* args);
 void handle_memdump(int client_fd, const char* args);
 
+void register_builtin_commands(void);
+
 #endif

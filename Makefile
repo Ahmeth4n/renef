@@ -157,6 +157,7 @@ PAYLOAD_LDFLAGS := -llog $(CAPSTONE_LIB) $(LUA_LIB) -lm -ldl
 
 AGENT_SRCS := $(PAYLOAD_DIR)/agent.c \
               $(PAYLOAD_DIR)/core/globals.c \
+              $(PAYLOAD_DIR)/core/cmd_registry.c \
               $(PAYLOAD_DIR)/hook/hook.c \
               $(PAYLOAD_DIR)/hook/hook_java.c \
               $(PAYLOAD_DIR)/proc/proc.c \
@@ -164,6 +165,7 @@ AGENT_SRCS := $(PAYLOAD_DIR)/agent.c \
               $(PAYLOAD_DIR)/handlers/cmd_inspect.c \
               $(PAYLOAD_DIR)/handlers/cmd_memscan.c \
               $(PAYLOAD_DIR)/handlers/cmd_memdump.c \
+              $(PAYLOAD_DIR)/handlers/cmd_builtin.c \
               $(PAYLOAD_DIR)/lua/engine/lua_engine.c \
               $(PAYLOAD_DIR)/lua/hook/lua_hook.c \
               $(PAYLOAD_DIR)/lua/memory/lua_memory.c \
