@@ -287,6 +287,13 @@ bool inject(int pid, const char* so_path) {
     int timeout_counter = 0;
     const int MAX_TIMEOUT = 30000;
 
+    char kill_cmd[256];
+    snprintf(kill_cmd, sizeof(kill_cmd), "kill -10 %d 2>/dev/null", pid);  // SIGUSR1 → GC
+    system(kill_cmd);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    std::cout << "  → Trigger signals sent\n";
+
+
     while (true) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         auto data = read_memory(pid, timezone_addr, 8);
