@@ -2,7 +2,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <sys/mman.h>
 #include <android/log.h>
 #include "../hook/lua_hook.h"
 #include "../memory/lua_memory.h"
@@ -11,8 +10,6 @@
 
 #define TAG "RENEF_LUA"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
-
-extern void register_memory_api(lua_State* L);
 
 extern int g_output_client_fd;
 
@@ -106,93 +103,6 @@ static int lua_module_symbols(lua_State* L) {
 }
 
 
-static int lua_memory_scan(lua_State* L) {
-    size_t len;
-    const char* pattern = luaL_checklstring(L, 1, &len);
-
-    MemorySearchResult result = memory_search((const unsigned char*)pattern, len);
-
-    lua_newtable(L);
-    for (int i = 0; i < result.count; i++) {
-        lua_newtable(L);
-        lua_pushstring(L, result.items[i].library_name);
-        lua_setfield(L, -2, "library");
-        lua_pushinteger(L, result.items[i].found_offset_addr);
-        lua_setfield(L, -2, "offset");
-        lua_pushstring(L, result.items[i].hex_result);
-        lua_setfield(L, -2, "hex");
-        lua_pushstring(L, result.items[i].ascii_result);
-        lua_setfield(L, -2, "ascii");
-        lua_rawseti(L, -2, i + 1);
-    }
-
-    free_search_result(&result);
-    return 1;
-}
-
-static int lua_memory_patch(lua_State* L) {
-    uintptr_t address = (uintptr_t)luaL_checkinteger(L, 1);
-    size_t patch_len;
-    const char* patch_bytes = luaL_checklstring(L, 2, &patch_len);
-
-    LOGI("Memory.patch: address=0x%lx, len=%zu", (unsigned long)address, patch_len);
-
-    size_t page_size = sysconf(_SC_PAGESIZE);
-    uintptr_t page_start = address & ~(page_size - 1);
-    size_t region_size = ((address + patch_len - page_start) + page_size - 1) & ~(page_size - 1);
-
-    if (mprotect((void*)page_start, region_size, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
-        char err_msg[256];
-        snprintf(err_msg, sizeof(err_msg), "ERROR: mprotect failed at 0x%lx", (unsigned long)address);
-        send_to_cli(err_msg);
-        lua_pushboolean(L, 0);
-        lua_pushstring(L, "mprotect failed");
-        return 2;
-    }
-
-    memcpy((void*)address, patch_bytes, patch_len);
-
-
-    char success_msg[256];
-    snprintf(success_msg, sizeof(success_msg), "✓ Patched %zu bytes at 0x%lx", patch_len, (unsigned long)address);
-    send_to_cli(success_msg);
-
-    lua_pushboolean(L, 1);
-    return 1;
-}
-
-static int lua_memory_read(lua_State* L) {
-    uintptr_t address = (uintptr_t)luaL_checkinteger(L, 1);
-    size_t len = (size_t)luaL_checkinteger(L, 2);
-
-    if (len > 4096) {
-        len = 4096;
-    }
-
-    lua_pushlstring(L, (const char*)address, len);
-    return 1;
-}
-
-static int lua_memory_read_string(lua_State* L) {
-    uintptr_t address = (uintptr_t)luaL_checkinteger(L, 1);
-
-    if (address == 0) {
-        lua_pushnil(L);
-        return 1;
-    }
-
-    size_t max_len = 1024;
-    const char* str = (const char*)address;
-
-    size_t len = 0;
-    while (len < max_len && str[len] != '\0') {
-        len++;
-    }
-
-    lua_pushlstring(L, str, len);
-    return 1;
-}
-
 static int lua_jni_string(lua_State* L) {
     const char* value = luaL_checkstring(L, 1);
     lua_newtable(L);
@@ -279,17 +189,6 @@ void register_renef_api(lua_State* L) {
     lua_pushcfunction(L, lua_console_log);
     lua_setfield(L, -2, "log");
     lua_setglobal(L, "console");
-
-    lua_newtable(L);
-    lua_pushcfunction(L, lua_memory_scan);
-    lua_setfield(L, -2, "scan");
-    lua_pushcfunction(L, lua_memory_patch);
-    lua_setfield(L, -2, "patch");
-    lua_pushcfunction(L, lua_memory_read);
-    lua_setfield(L, -2, "read");
-    lua_pushcfunction(L, lua_memory_read_string);
-    lua_setfield(L, -2, "readString");
-    lua_setglobal(L, "Memory");
 
     lua_newtable(L);
     lua_pushcfunction(L, lua_list_modules);

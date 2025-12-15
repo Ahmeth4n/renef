@@ -1,12 +1,28 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
+#include <sys/mman.h>
 #include <android/log.h>
 #include <lauxlib.h>
 #include "lua_memory.h"
 
 #define TAG "LUA_MEMORY"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
+
+extern int g_output_client_fd;
+
+static void send_to_cli(const char* msg) {
+    LOGI("[CLI_SEND] g_output_client_fd=%d, msg=%s", g_output_client_fd, msg ? msg : "NULL");
+    if (g_output_client_fd >= 0 && msg) {
+        size_t len = strlen(msg);
+        ssize_t written = write(g_output_client_fd, msg, len);
+        write(g_output_client_fd, "\n", 1);
+        LOGI("[CLI_SEND] wrote %zd bytes to fd %d", written, g_output_client_fd);
+    } else {
+        LOGI("[CLI_SEND] SKIPPED - fd=%d", g_output_client_fd);
+    }
+}
 
 static bool pattern_matches(const unsigned char* data, const int* pattern, size_t patternLen) {
     for (size_t i = 0; i < patternLen; i++) {
@@ -475,7 +491,7 @@ static int lua_mem_search(lua_State* L) {
         lua_newtable(L);
 
         lua_pushstring(L, result.items[i].library_name);
-        lua_setfield(L, -2, "lib");
+        lua_setfield(L, -2, "library");
 
         lua_pushinteger(L, result.items[i].absolute_addr);
         lua_setfield(L, -2, "addr");
@@ -505,7 +521,7 @@ static int lua_mem_dump(lua_State* L) {
     for (int i = 1; i <= n; i++) {
         lua_rawgeti(L, 1, i);
 
-        lua_getfield(L, -1, "lib");
+        lua_getfield(L, -1, "library");
         const char* lib = lua_tostring(L, -1);
         lua_pop(L, 1);
 
@@ -615,11 +631,45 @@ static int lua_mem_read_str(lua_State* L) {
     return 1;
 }
 
+static int lua_mem_patch(lua_State* L) {
+    uintptr_t address = (uintptr_t)luaL_checkinteger(L, 1);
+    size_t patch_len;
+    const char* patch_bytes = luaL_checklstring(L, 2, &patch_len);
+
+    LOGI("Memory.patch: address=0x%lx, len=%zu", (unsigned long)address, patch_len);
+
+    size_t page_size = sysconf(_SC_PAGESIZE);
+    uintptr_t page_start = address & ~(page_size - 1);
+    size_t region_size = ((address + patch_len - page_start) + page_size - 1) & ~(page_size - 1);
+
+    if (mprotect((void*)page_start, region_size, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
+        char err_msg[256];
+        snprintf(err_msg, sizeof(err_msg), "ERROR: mprotect failed at 0x%lx", (unsigned long)address);
+        send_to_cli(err_msg);
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, "mprotect failed");
+        return 2;
+    }
+
+    memcpy((void*)address, patch_bytes, patch_len);
+
+
+    char success_msg[256];
+    snprintf(success_msg, sizeof(success_msg), "✓ Patched %zu bytes at 0x%lx", patch_len, (unsigned long)address);
+    send_to_cli(success_msg);
+
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
 void register_memory_search_api(lua_State* L) {
     lua_newtable(L);
 
     lua_pushcfunction(L, lua_mem_search);
     lua_setfield(L, -2, "search");
+
+    lua_pushcfunction(L, lua_mem_search);
+    lua_setfield(L, -2, "scan");
 
     lua_pushcfunction(L, lua_mem_dump);
     lua_setfield(L, -2, "dump");
@@ -629,6 +679,9 @@ void register_memory_search_api(lua_State* L) {
 
     lua_pushcfunction(L, lua_mem_write);
     lua_setfield(L, -2, "write");
+
+    lua_pushcfunction(L, lua_mem_patch);
+    lua_setfield(L, -2, "patch");
 
     lua_pushcfunction(L, lua_mem_read_u8);
     lua_setfield(L, -2, "readU8");
@@ -657,5 +710,8 @@ void register_memory_search_api(lua_State* L) {
     lua_pushcfunction(L, lua_mem_read_str);
     lua_setfield(L, -2, "readStr");
 
-    lua_setglobal(L, "mem");
+    lua_pushcfunction(L, lua_mem_read_str);
+    lua_setfield(L, -2, "readString");
+
+    lua_setglobal(L, "Memory");
 }
