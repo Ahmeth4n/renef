@@ -90,9 +90,11 @@ char* get_loaded_libraries(void) {
     }
     result[0] = '\0';
 
-    char line[256];
+    char line[512];
     while (fgets(line, sizeof(line), fp)) {
-        if (strstr(line, "r--p") && strstr(line, ".so") && strstr(line, "00000000")) {
+        // Match .so files at offset 0 (first segment) - can be r-xp or r--p
+        if (strstr(line, ".so") && strstr(line, " 00000000 ") &&
+            (strstr(line, "r-xp") || strstr(line, "r--p"))) {
             size_t line_len = strlen(line);
 
             if (buf_used + line_len + 1 > buf_size) {
