@@ -1,10 +1,10 @@
-cmake_minimum_required(VERSION 3.11)
+cmake_minimum_required(VERSION 3.16)
 project(renef VERSION 0.1.1)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Asio header-only kütüphanesi
+# Asio header-only library
 add_library(asio INTERFACE)
 target_include_directories(asio INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/external/asio/include
@@ -20,57 +20,47 @@ target_include_directories(capstone INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/external/capstone/include
 )
 
-# Lua 5.4 library
-add_library(lua STATIC IMPORTED)
-set_target_properties(lua PROPERTIES
-    IMPORTED_LOCATION ${CMAKE_CURRENT_SOURCE_DIR}/external/lua/lib-android/lib/liblua.a
-)
-target_include_directories(lua INTERFACE
-    ${CMAKE_CURRENT_SOURCE_DIR}/external/lua/lib-android/include
-)
-
-# Compiler uyarıları
+# Compiler warnings
 add_compile_options(-Wall -Wextra)
 
-# Core library (commands, utilities)
+# librenef - core library
 add_library(renef_core STATIC
-    src/core/cmd.cpp
-    src/core/cmds/ping/ping.cpp
-    src/core/cmds/attach/attach.cpp
-    src/core/cmds/spawn/spawn.cpp
-    src/core/cmds/list/la.cpp
-    src/core/cmds/inspect/ib.cpp
-    src/core/cmds/eval/eval.cpp
-    src/core/cmds/load/load.cpp
-    src/core/cmds/watch/watch.cpp
-    src/core/cmds/memscan/memscan.cpp
-    src/core/cmds/hooks/hooks.cpp
-    src/core/cmds/sec/sec.cpp
-    src/core/cmds/memdump/memdump.cpp
-    src/core/cmds/hookgen/hookgen.cpp
-    src/core/util/string/string_utils.cpp
-    src/core/util/crypto/crypto.cpp
-    src/core/util/socket/socket_helper.cpp
-    src/core/transport/uds_transport.cpp
-    src/core/transport/tcp_transport.cpp
-    src/core/transport/transport_server.cpp
-    src/injector/injector.cpp
+    # Command registry
+    src/librenef/cmd/cmd.cpp
+
+    # Commands (flattened)
+    src/librenef/cmd/cmd_ping.cpp
+    src/librenef/cmd/cmd_attach.cpp
+    src/librenef/cmd/cmd_spawn.cpp
+    src/librenef/cmd/cmd_eval.cpp
+    src/librenef/cmd/cmd_load.cpp
+    src/librenef/cmd/cmd_watch.cpp
+    src/librenef/cmd/cmd_memscan.cpp
+    src/librenef/cmd/cmd_hooks.cpp
+    src/librenef/cmd/cmd_sec.cpp
+    src/librenef/cmd/cmd_memdump.cpp
+    src/librenef/cmd/cmd_hookgen.cpp
+    src/librenef/cmd/cmd_inspect.cpp
+    src/librenef/cmd/cmd_list.cpp
+
+    # Transport
+    src/librenef/transport/uds.cpp
+    src/librenef/transport/tcp.cpp
+    src/librenef/transport/server.cpp
+
+    # Utilities
+    src/librenef/util/socket.cpp
+    src/librenef/util/string.cpp
+    src/librenef/util/crypto.cpp
+
+    # Injector
+    src/inject/injector.cpp
 )
 
 target_include_directories(renef_core PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/util
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/util/string
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/util/socket
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/util/crypto
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/transport
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/cmds/watch
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/cmds/load
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/cmds/memscan
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/cmds/hooks
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/cmds/sec
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/cmds/hookgen
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/injector
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/librenef/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/librenef
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/inject
     ${CMAKE_CURRENT_SOURCE_DIR}/external
 )
 
@@ -78,7 +68,7 @@ target_link_libraries(renef_core PUBLIC
     capstone
 )
 
-# readline kütüphanesini bul
+# Find readline library
 find_path(Readline_INCLUDE_DIR readline/readline.h
     HINTS
         /opt/homebrew/opt/readline/include
@@ -106,19 +96,14 @@ message(STATUS "readline include: ${Readline_INCLUDE_DIR}")
 
 # renef CLI client executable
 add_executable(renef
-    src/cli/renef.cpp
-    src/cli/tui/memscan_tui.cpp
+    src/binr/renef/main.cpp
+    src/binr/renef/tui/memscan_tui.cpp
 )
 
 target_include_directories(renef PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/util
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/util/string
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/util/socket
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/util/crypto
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/transport
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/cmds/hooks
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/cli/tui
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/librenef/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/librenef
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/binr/renef/tui
     ${CMAKE_CURRENT_SOURCE_DIR}/external
     ${Readline_INCLUDE_DIR}
 )

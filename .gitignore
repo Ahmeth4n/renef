@@ -4,7 +4,7 @@ tests/libsdk.so
 renef_inject
 test_payload/build/*
 tests/server/build/*
-renef
+/renef
 test_inject
 renef_server
 test_attach

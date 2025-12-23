@@ -60,9 +60,7 @@ TOOLCHAIN := $(NDK)/toolchains/llvm/prebuilt/$(NDK_HOST)
 CLANG := $(TOOLCHAIN)/bin/aarch64-linux-android21-clang
 CLANGXX := $(TOOLCHAIN)/bin/aarch64-linux-android21-clang++
 
-SRC_DIR := src
 BUILD_DIR := build
-PAYLOAD_DIR := src/agent
 ANDROID_BUILD := $(BUILD_DIR)/android
 
 RENEF_CLIENT := $(BUILD_DIR)/renef
@@ -81,49 +79,36 @@ else
     STRIP_CMD := @true
 endif
 
-SERVER_SRCS := $(SRC_DIR)/server/renef_server.cpp \
-               $(SRC_DIR)/core/transport/transport_server.cpp \
-               $(SRC_DIR)/core/transport/uds_transport.cpp \
-               $(SRC_DIR)/core/transport/tcp_transport.cpp \
-               $(SRC_DIR)/core/cmd.cpp \
-               $(SRC_DIR)/core/cmds/ping/ping.cpp \
-               $(SRC_DIR)/core/cmds/attach/attach.cpp \
-               $(SRC_DIR)/core/cmds/spawn/spawn.cpp \
-               $(SRC_DIR)/core/cmds/list/la.cpp \
-               $(SRC_DIR)/core/cmds/inspect/ib.cpp \
-               $(SRC_DIR)/core/cmds/eval/eval.cpp \
-               $(SRC_DIR)/core/cmds/load/load.cpp \
-               $(SRC_DIR)/core/cmds/watch/watch.cpp \
-               $(SRC_DIR)/core/cmds/memscan/memscan.cpp \
-               $(SRC_DIR)/core/cmds/hooks/hooks.cpp \
-               $(SRC_DIR)/core/cmds/sec/sec.cpp \
-               $(SRC_DIR)/core/cmds/memdump/memdump.cpp \
-               $(SRC_DIR)/core/cmds/hookgen/hookgen.cpp \
-               $(SRC_DIR)/core/util/string/string_utils.cpp \
-               $(SRC_DIR)/core/util/crypto/crypto.cpp \
-               $(SRC_DIR)/core/util/socket/socket_helper.cpp \
-               $(SRC_DIR)/injector/injector.cpp
+# Server sources (new paths)
+SERVER_SRCS := src/server/main.cpp \
+               src/librenef/transport/server.cpp \
+               src/librenef/transport/uds.cpp \
+               src/librenef/transport/tcp.cpp \
+               src/librenef/cmd/cmd.cpp \
+               src/librenef/cmd/cmd_ping.cpp \
+               src/librenef/cmd/cmd_attach.cpp \
+               src/librenef/cmd/cmd_spawn.cpp \
+               src/librenef/cmd/cmd_list.cpp \
+               src/librenef/cmd/cmd_inspect.cpp \
+               src/librenef/cmd/cmd_eval.cpp \
+               src/librenef/cmd/cmd_load.cpp \
+               src/librenef/cmd/cmd_watch.cpp \
+               src/librenef/cmd/cmd_memscan.cpp \
+               src/librenef/cmd/cmd_hooks.cpp \
+               src/librenef/cmd/cmd_sec.cpp \
+               src/librenef/cmd/cmd_memdump.cpp \
+               src/librenef/cmd/cmd_hookgen.cpp \
+               src/librenef/util/string.cpp \
+               src/librenef/util/crypto.cpp \
+               src/librenef/util/socket.cpp \
+               src/inject/injector.cpp
 
 SERVER_CXXFLAGS := -std=c++17 \
                    $(SERVER_OPT_FLAGS) \
-                   -I$(SRC_DIR)/core \
-                   -I$(SRC_DIR)/core/transport \
-                   -I$(SRC_DIR)/server \
-                   -I$(SRC_DIR)/core/util \
-                   -I$(SRC_DIR)/core/crypto \
-                   -I$(SRC_DIR)/core/util/string \
-                   -I$(SRC_DIR)/core/util/socket \
-                   -I$(SRC_DIR)/core/cmds/ping \
-                   -I$(SRC_DIR)/core/cmds/attach \
-                   -I$(SRC_DIR)/core/cmds/spawn \
-                   -I$(SRC_DIR)/core/cmds/list \
-                   -I$(SRC_DIR)/core/cmds/inspect \
-                   -I$(SRC_DIR)/core/cmds/watch \
-                   -I$(SRC_DIR)/core/cmds/memscan \
-                   -I$(SRC_DIR)/core/cmds/hooks \
-                   -I$(SRC_DIR)/core/cmds/sec \
-                   -I$(SRC_DIR)/core/cmds/hookgen \
-                   -I$(SRC_DIR)/injector \
+                   -Isrc/librenef/include \
+                   -Isrc/librenef \
+                   -Isrc/server \
+                   -Isrc/inject \
                    -Iexternal \
                    -Iexternal/capstone/include \
                    -static-libstdc++ \
@@ -149,27 +134,29 @@ LUA_INCLUDE := external/lua/lib-android/include
 
 PAYLOAD_CFLAGS := -shared -fPIC -std=c11 \
                   $(PAYLOAD_OPT_FLAGS) \
-                  -I$(PAYLOAD_DIR) \
+                  -Isrc/agent/include \
+                  -Isrc/agent \
                   -Iexternal/capstone/include \
                   -I$(LUA_INCLUDE) \
                   -I$(NDK)/toolchains/llvm/prebuilt/$(NDK_HOST)/sysroot/usr/include
 PAYLOAD_LDFLAGS := -llog $(CAPSTONE_LIB) $(LUA_LIB) -lm -ldl
 
-AGENT_SRCS := $(PAYLOAD_DIR)/agent.c \
-              $(PAYLOAD_DIR)/core/globals.c \
-              $(PAYLOAD_DIR)/core/cmd_registry.c \
-              $(PAYLOAD_DIR)/hook/hook.c \
-              $(PAYLOAD_DIR)/hook/hook_java.c \
-              $(PAYLOAD_DIR)/proc/proc.c \
-              $(PAYLOAD_DIR)/handlers/cmd_eval.c \
-              $(PAYLOAD_DIR)/handlers/cmd_inspect.c \
-              $(PAYLOAD_DIR)/handlers/cmd_memscan.c \
-              $(PAYLOAD_DIR)/handlers/cmd_memdump.c \
-              $(PAYLOAD_DIR)/handlers/cmd_builtin.c \
-              $(PAYLOAD_DIR)/lua/engine/lua_engine.c \
-              $(PAYLOAD_DIR)/lua/hook/lua_hook.c \
-              $(PAYLOAD_DIR)/lua/memory/lua_memory.c \
-              $(PAYLOAD_DIR)/lua/thread/lua_thread.c
+# Agent sources (new paths)
+AGENT_SRCS := src/agent/core/agent.c \
+              src/agent/core/globals.c \
+              src/agent/core/registry.c \
+              src/agent/hook/native.c \
+              src/agent/hook/java.c \
+              src/agent/proc/proc.c \
+              src/agent/handlers/eval.c \
+              src/agent/handlers/inspect.c \
+              src/agent/handlers/memscan.c \
+              src/agent/handlers/memdump.c \
+              src/agent/handlers/builtin.c \
+              src/agent/lua/engine.c \
+              src/agent/lua/api_hook.c \
+              src/agent/lua/api_memory.c \
+              src/agent/lua/api_thread.c
 
 .PHONY: all clean clean-capstone clean-all client server payload deploy install test build-capstone setup setup-lua setup-asio setup-capstone-host release debug
 
@@ -182,7 +169,7 @@ debug:
 	@$(MAKE) BUILD_MODE=debug all
 
 setup: setup-asio setup-lua setup-capstone-host build-capstone
-	@echo "✅ All dependencies set up"
+	@echo "All dependencies set up"
 
 setup-asio: $(ASIO_HEADER)
 
@@ -195,7 +182,7 @@ $(ASIO_HEADER):
 		rm -rf asio && \
 		mv asio-asio-$(ASIO_VERSION)/asio asio && \
 		rm -rf asio-asio-$(ASIO_VERSION) asio.tar.gz
-	@echo "✅ ASIO $(ASIO_VERSION) downloaded"
+	@echo "ASIO $(ASIO_VERSION) downloaded"
 
 setup-lua: $(LUA_LIB)
 
@@ -221,7 +208,7 @@ $(LUA_LIB):
 		$(TOOLCHAIN)/bin/llvm-ar rcs ../lib-android/lib/liblua.a *.o && \
 		rm -f *.o && \
 		cp lua.h luaconf.h lualib.h lauxlib.h ../lib-android/include/
-	@echo "✅ Lua $(LUA_VERSION) built"
+	@echo "Lua $(LUA_VERSION) built"
 
 setup-capstone-host: $(CAPSTONE_HOST_LIB)
 
@@ -241,7 +228,7 @@ $(CAPSTONE_HOST_LIB):
 	@mkdir -p external/capstone/lib external/capstone/include
 	@cp $(CAPSTONE_SRC)/build-host/libcapstone.a external/capstone/lib/
 	@cp -r $(CAPSTONE_SRC)/include/capstone external/capstone/include/
-	@echo "✅ Capstone $(CAPSTONE_VERSION) built for host"
+	@echo "Capstone $(CAPSTONE_VERSION) built for host"
 
 client: $(ASIO_HEADER) $(CAPSTONE_HOST_LIB)
 	@echo "Building renef client for $(HOST_OS)/$(HOST_ARCH) ($(BUILD_MODE))..."
@@ -250,7 +237,7 @@ client: $(ASIO_HEADER) $(CAPSTONE_HOST_LIB)
 	@if [ "$(BUILD_MODE)" = "release" ]; then \
 		$(STRIP_CMD) $(RENEF_CLIENT) 2>/dev/null || true; \
 	fi
-	@echo "✅ Built: $(RENEF_CLIENT)"
+	@echo "Built: $(RENEF_CLIENT)"
 
 server: $(RENEF_SERVER)
 
@@ -261,7 +248,7 @@ $(RENEF_SERVER): $(SERVER_SRCS) $(CAPSTONE_LIB)
 	@if [ "$(BUILD_MODE)" = "release" ]; then \
 		$(TOOLCHAIN)/bin/llvm-strip $@ 2>/dev/null || true; \
 	fi
-	@echo "✅ Built: $@"
+	@echo "Built: $@"
 
 build-capstone: $(CAPSTONE_LIB)
 
@@ -286,7 +273,7 @@ $(CAPSTONE_LIB):
 	@mkdir -p external/capstone/lib-android/arm64-v8a external/capstone/include
 	@cp $(CAPSTONE_BUILD)/libcapstone.a $(CAPSTONE_LIB)
 	@cp -r $(CAPSTONE_SRC)/include/capstone external/capstone/include/
-	@echo "✅ Capstone $(CAPSTONE_VERSION) built for Android"
+	@echo "Capstone $(CAPSTONE_VERSION) built for Android"
 
 payload: $(PAYLOAD_SO)
 
@@ -297,7 +284,7 @@ $(PAYLOAD_SO): $(AGENT_SRCS) $(CAPSTONE_LIB) $(LUA_LIB)
 	@if [ "$(BUILD_MODE)" = "release" ]; then \
 		$(TOOLCHAIN)/bin/llvm-strip $@ 2>/dev/null || true; \
 	fi
-	@echo "✅ Built: $@"
+	@echo "Built: $@"
 
 deploy: server payload
 	@echo "Deploying to Android..."
@@ -308,15 +295,15 @@ deploy: server payload
 	adb shell chmod +x /data/local/tmp/.r
 	@echo "Setting SELinux context (Samsung fix)..."
 	-adb shell su -c "chcon u:object_r:app_data_file:s0 /data/local/tmp/.r" 2>/dev/null || true
-	@echo "✅ Deployed"
+	@echo "Deployed"
 
 install: deploy
 	@if ! adb forward --list | grep -q "tcp:1907"; then \
 		echo "Setting up adb forward..."; \
 		adb forward tcp:1907 localabstract:com.android.internal.os.RuntimeInit; \
-		echo "✅ Port forwarded"; \
+		echo "Port forwarded"; \
 	else \
-		echo "✅ Port already forwarded"; \
+		echo "Port already forwarded"; \
 	fi
 	@echo ""
 	@echo "Run on device: adb shell /data/local/tmp/renef_server"
@@ -330,15 +317,15 @@ test: install
 
 clean:
 	rm -rf $(BUILD_DIR)
-	@echo "✅ Cleaned"
+	@echo "Cleaned"
 
 clean-capstone:
 	@rm -rf $(CAPSTONE_BUILD)
 	@rm -f $(CAPSTONE_LIB)
-	@echo "✅ Capstone cleaned"
+	@echo "Capstone cleaned"
 
 clean-all: clean clean-capstone
-	@echo "✅ Full clean completed"
+	@echo "Full clean completed"
 
 info:
 	@echo "Build Configuration:"

@@ -1,5 +1,5 @@
-#include "proc.h"
-#include "../core/globals.h"
+#include <agent/proc.h>
+#include <agent/globals.h>
 
 #include <stdio.h>
 #include <stdlib.h>

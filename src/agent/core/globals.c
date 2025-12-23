@@ -1,5 +1,5 @@
-#include "globals.h"
-#include "../hook/hook.h"
+#include <agent/globals.h>
+#include <agent/hook.h>
 
 LuaEngine* g_lua_engine = NULL;
 
