@@ -42,6 +42,7 @@ add_library(renef_core STATIC
     src/librenef/cmd/cmd_hookgen.cpp
     src/librenef/cmd/cmd_inspect.cpp
     src/librenef/cmd/cmd_list.cpp
+    src/librenef/cmd/cmd_plugin.cpp
 
     # Transport
     src/librenef/transport/uds.cpp
@@ -50,11 +51,15 @@ add_library(renef_core STATIC
 
     # Utilities
     src/librenef/util/socket.cpp
+    src/librenef/util/server_connection.cpp
     src/librenef/util/string.cpp
     src/librenef/util/crypto.cpp
 
     # Injector
     src/inject/injector.cpp
+
+    # Plugin system
+    src/librenef/plugin/plugin.cpp
 )
 
 target_include_directories(renef_core PUBLIC
@@ -117,7 +122,14 @@ target_link_libraries(renef
         capstone
         renef_core
         ${Readline_LIBRARY}
+        ${CMAKE_DL_LIBS}
 )
+
+# Export symbols for plugins to use (ren_exec, ren_print, etc.)
+set_target_properties(renef PROPERTIES ENABLE_EXPORTS ON)
+if(UNIX AND NOT APPLE)
+    target_link_options(renef PRIVATE -rdynamic)
+endif()
 
 # Note: Android components (renef_server and libagent.so) are built
 # separately via Makefile using Android NDK cross-compilation.

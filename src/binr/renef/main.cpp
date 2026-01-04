@@ -12,6 +12,7 @@
 #include <asio.hpp>
 #include <renef/cmd.h>
 #include <renef/colors.h>
+#include <renef/server_connection.h>
 #include <readline/readline.h>
 #include <readline/history.h>
 #include <termios.h>
@@ -19,6 +20,7 @@
 #include <unistd.h>
 #include <atomic>
 #include "tui/memscan_tui.h"
+#include <renef/plugin.h>
 
 static std::vector<std::pair<std::string, std::string>> global_commands;
 static std::string g_device_id;
@@ -522,99 +524,40 @@ bool check_quit_key() {
 }
 
 std::string send_command(const std::string& command) {
-    std::string full_response;
-    try {
-        asio::io_context io_context;
-        asio::ip::tcp::socket socket(io_context);
+    ServerConnection& conn = ServerConnection::instance();
 
-        asio::ip::tcp::endpoint endpoint(
-            asio::ip::make_address("127.0.0.1"),
-            DEFAULT_TCP_PORT
-        );
-
-        socket.connect(endpoint);
-
-        std::string cmd_with_newline = command + "\n";
-        size_t sent = asio::write(socket, asio::buffer(cmd_with_newline));
-
-        char response[4096];
-        size_t total_read = 0;
-
-        socket.non_blocking(true);
-
-        bool streaming = is_streaming_command(command);
-
-        if (streaming) {
-            std::cout << "(Press 'q' to exit watch mode)\n";
+    if (!conn.is_connected()) {
+        if (!conn.connect("127.0.0.1", DEFAULT_TCP_PORT)) {
+            std::cerr << "Error: Cannot connect to server\n";
+            std::cerr << "\nMake sure:\n";
+            std::cerr << "1. renef_server is running on Android device\n";
+            std::cerr << "2. adb forward is set: adb forward tcp:1907 localabstract:com.android.internal.os.RuntimeInit\n";
+            return "";
         }
-
-        auto start_time = std::chrono::steady_clock::now();
-        const auto initial_timeout = std::chrono::seconds(10);
-
-        const auto data_timeout = streaming ? std::chrono::hours(1) : std::chrono::milliseconds(200);
-        bool data_received = false;
-
-        while (true) {
-            if (streaming && check_quit_key()) {
-                std::cout << "\nExiting watch mode...\n";
-                break;
-            }
-
-            asio::error_code error;
-            size_t len = socket.read_some(asio::buffer(response), error);
-
-            if (len > 0) {
-                ColorManager& cm = ColorManager::instance();
-                std::string chunk(response, len);
-                std::cout << cm.response_color << chunk << RESET;
-                std::cout.flush();
-                full_response += chunk;
-                total_read += len;
-                data_received = true;
-
-                start_time = std::chrono::steady_clock::now();
-            }
-
-            if (error == asio::error::eof) {
-                break;
-            }
-
-            if (error == asio::error::would_block) {
-                auto elapsed = std::chrono::steady_clock::now() - start_time;
-
-                auto current_timeout = data_received ? data_timeout : initial_timeout;
-
-                if (elapsed > current_timeout) {
-                    if (!data_received) {
-                        std::cerr << "Timeout waiting for response\n";
-                    }
-                    break;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                continue;
-            }
-
-            if (error) {
-                std::cerr << "Read error: " << error.message() << "\n";
-                break;
-            }
-        }
-
-        if (total_read == 0) {
-            std::cout << "(no response)\n";
-        }
-
-        asio::error_code ec;
-        socket.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
-        socket.close();
-
-    } catch (std::exception& e) {
-        std::cerr << "Error: " << e.what() << "\n";
-        std::cerr << "\nMake sure:\n";
-        std::cerr << "1. renef_server is running on Android device\n";
-        std::cerr << "2. adb forward is set: adb forward tcp:1907 localabstract:com.android.internal.os.RuntimeInit\n";
     }
-    return full_response;
+
+    bool streaming = is_streaming_command(command);
+    if (streaming) {
+        std::cout << "(Press 'q' to exit watch mode)\n";
+    }
+
+    if (!conn.send(command + "\n")) {
+        std::cerr << "Error: Failed to send command\n";
+        return "";
+    }
+
+    int timeout = streaming ? 3600000 : 10000;
+    std::string response = conn.receive(timeout);
+
+    if (!response.empty()) {
+        ColorManager& cm = ColorManager::instance();
+        std::cout << cm.response_color << response << RESET;
+        std::cout.flush();
+    } else {
+        std::cout << "(no response)\n";
+    }
+
+    return response;
 }
 
 int main(int argc, char *argv[]) {
@@ -681,6 +624,13 @@ int main(int argc, char *argv[]) {
 
     auto& registry = CommandRegistry::instance();
     registry.setup_all_commands();
+
+    // Auto-load plugins from ~/.config/renef/plugins
+    plugin_autoload(nullptr);
+
+    // Register plugins command (client-only)
+    extern std::unique_ptr<CommandDispatcher> create_plugins_command();
+    registry.register_command(create_plugins_command());
 
     global_commands = registry.get_all_commands_with_descriptions();
 
@@ -982,6 +932,29 @@ int main(int argc, char *argv[]) {
 
         if (!is_known_command && processed_cmd.rfind("exec ", 0) != 0) {
             processed_cmd = "exec " + command;
+        }
+
+        // Check if command is handled by a plugin (not built-in server commands)
+        RENPlugin* plugin = plugin_find(cmd_name.c_str());
+        if (plugin && plugin->exec) {
+            static int stdout_fd = STDOUT_FILENO;
+
+            renef_ctx ctx;
+            ctx.client_fd = &stdout_fd;
+            ctx.socket_helper = nullptr;
+            ctx.command_registry = nullptr;
+            ctx.target_pid = nullptr;
+
+            // Get args after command name
+            std::string args;
+            size_t space = command.find(' ');
+            if (space != std::string::npos) {
+                args = command.substr(space + 1);
+            }
+
+            plugin->exec(&ctx, args.empty() ? nullptr : const_cast<char*>(args.c_str()));
+            free(input);
+            continue;
         }
 
         bool is_spawn_or_attach = (command.rfind("spawn ", 0) == 0 || command.rfind("attach ", 0) == 0);

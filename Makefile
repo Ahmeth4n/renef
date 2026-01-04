@@ -158,9 +158,17 @@ AGENT_SRCS := src/agent/core/agent.c \
               src/agent/lua/api_memory.c \
               src/agent/lua/api_thread.c
 
-.PHONY: all clean clean-capstone clean-all client server payload deploy install test build-capstone setup setup-lua setup-asio setup-capstone-host release debug
+.PHONY: all clean clean-capstone clean-all client server payload deploy install test build-capstone setup setup-lua setup-asio setup-capstone-host release debug plugins
 
 all: client server payload
+
+plugins:
+	@if [ -d "examples/plugins" ] && [ -n "$$(ls examples/plugins/*.c 2>/dev/null)" ]; then \
+		echo "Building plugins..."; \
+		$(MAKE) -C examples/plugins install; \
+	else \
+		echo "No plugins found in examples/plugins/"; \
+	fi
 
 release:
 	@$(MAKE) BUILD_MODE=release all
