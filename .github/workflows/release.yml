@@ -302,7 +302,14 @@ jobs:
           Dynamic Instrumentation Toolkit for Android ARM64
 
           ### What's New
+            - Socket implementation and folder structure changed.
+            - For old versions, agent file (`.r`) keep storing at /data/local/tmp folder. We're fixed with agent file deleted when injection completed.
+            - Plugin support implemented. Now developers can create their own Renef plugins if they wish. 
+            
+            
+            (Example module file added in [examples/plugins/test_plugin.c](https://github.com/Ahmeth4n/renef/blob/main/examples/plugins/test_plugin.c))
 
+            Feel free to contributing!
           ${COMMITS}
 
           ### Downloads
