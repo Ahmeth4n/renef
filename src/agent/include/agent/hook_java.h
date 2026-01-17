@@ -59,7 +59,9 @@ int uninstall_all_java_hooks(void);
 
 void* get_java_hook_original_entry(int hook_index);
 
-void java_hook_handler(int hook_index, uint64_t* saved_regs);
+// Hook callback handlers
+void java_hook_on_enter(int hook_index, uint64_t* saved_regs);
+uint64_t java_hook_on_leave(int hook_index, uint64_t ret_val);
 
 void* create_java_hook_trampoline(int hook_index);
 

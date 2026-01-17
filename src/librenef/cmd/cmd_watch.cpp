@@ -52,7 +52,6 @@ public:
 
         char buffer[4096];
         bool running = true;
-        int loop_count = 0;
 
         while (running) {
             struct pollfd pfds[2];
@@ -60,12 +59,6 @@ public:
             pfds[1] = {client_fd, POLLIN, 0};
 
             int ret = poll(pfds, 2, 1000);
-
-            loop_count++;
-            if (loop_count % 5 == 0) {
-                std::cout << "[WATCH] poll loop #" << loop_count << ", ret=" << ret
-                          << ", revents[0]=" << pfds[0].revents << ", revents[1]=" << pfds[1].revents << "\n";
-            }
 
             if (ret > 0) {
                 if (pfds[0].revents & POLLIN) {
@@ -91,6 +84,9 @@ public:
                     char cmd[32];
                     ssize_t n = recv(client_fd, cmd, sizeof(cmd) - 1, MSG_PEEK);
                     if (n <= 0) {
+                        running = false;
+                    } else {
+                        std::cout << "[WATCH] Client sent data, exiting watch mode\n";
                         running = false;
                     }
                 }

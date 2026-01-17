@@ -29,32 +29,94 @@
 #include <agent/hook.h>
 #include <agent/proc.h>
 #include <agent/handlers.h>
+#include <sys/system_properties.h>
 
 static JavaVM* g_jvm = NULL;
 
 typedef jint (*JNI_GetCreatedJavaVMs_t)(JavaVM**, jsize, jsize*);
 
+static int get_device_api_level(void) {
+    static int cached_api = 0;
+    if (cached_api > 0) return cached_api;
+
+    char value[PROP_VALUE_MAX] = {0};
+    if (__system_property_get("ro.build.version.sdk", value) > 0) {
+        cached_api = atoi(value);
+    } else {
+        cached_api = 30;
+    }
+    return cached_api;
+}
+
+// Android 11-14 (API 30-34): dlopen restricted, use RTLD_DEFAULT
+static JNI_GetCreatedJavaVMs_t get_jvm_func_api30(void) {
+    JNI_GetCreatedJavaVMs_t func = (JNI_GetCreatedJavaVMs_t)dlsym(RTLD_DEFAULT, "JNI_GetCreatedJavaVMs");
+    if (func) {
+        LOGI("API 30-34: Found JNI_GetCreatedJavaVMs via RTLD_DEFAULT");
+    }
+    return func;
+}
+
+// Android 15+ (API 35+): dlopen works
+static JNI_GetCreatedJavaVMs_t get_jvm_func_api35(void) {
+    void* handle = dlopen("libart.so", RTLD_NOW);
+    if (!handle) {
+        handle = dlopen("libnativehelper.so", RTLD_NOW);
+    }
+    if (handle) {
+        JNI_GetCreatedJavaVMs_t func = (JNI_GetCreatedJavaVMs_t)dlsym(handle, "JNI_GetCreatedJavaVMs");
+        if (func) {
+            LOGI("API 35+: Found JNI_GetCreatedJavaVMs via dlopen");
+        }
+        return func;
+    }
+    return NULL;
+}
+
+// Android 10 and below (API <= 29): dlopen works
+static JNI_GetCreatedJavaVMs_t get_jvm_func_legacy(void) {
+    void* handle = dlopen("libart.so", RTLD_NOW);
+    if (!handle) {
+        handle = dlopen("libnativehelper.so", RTLD_NOW);
+    }
+    if (handle) {
+        JNI_GetCreatedJavaVMs_t func = (JNI_GetCreatedJavaVMs_t)dlsym(handle, "JNI_GetCreatedJavaVMs");
+        if (func) {
+            LOGI("API <=29: Found JNI_GetCreatedJavaVMs via dlopen");
+        }
+        return func;
+    }
+    return NULL;
+}
+
 static JNIEnv* get_jni_env(void) {
     if (!g_jvm) {
-        void* handle = dlopen("libart.so", RTLD_NOW);
-        if (!handle) {
-            handle = dlopen("libnativehelper.so", RTLD_NOW);
+        int api = get_device_api_level();
+        JNI_GetCreatedJavaVMs_t getVMs = NULL;
+
+        if (api >= 35) {
+            // Android 15+ (API 35+)
+            getVMs = get_jvm_func_api35();
+        } else if (api >= 30) {
+            // Android 11-14 (API 30-34)
+            getVMs = get_jvm_func_api30();
+        } else {
+            // Android 10 and below (API <= 29)
+            getVMs = get_jvm_func_legacy();
         }
 
-        if (handle) {
-            JNI_GetCreatedJavaVMs_t getVMs = (JNI_GetCreatedJavaVMs_t)dlsym(handle, "JNI_GetCreatedJavaVMs");
-            if (getVMs) {
-                JavaVM* vms[1];
-                jsize count = 0;
-                if (getVMs(vms, 1, &count) == JNI_OK && count > 0) {
-                    g_jvm = vms[0];
-                    LOGI("Got JavaVM via JNI_GetCreatedJavaVMs: %p", g_jvm);
-                }
+        if (getVMs) {
+            JavaVM* vms[1];
+            jsize count = 0;
+            if (getVMs(vms, 1, &count) == JNI_OK && count > 0) {
+                g_jvm = vms[0];
+                g_java_vm = g_jvm;
+                LOGI("Got JavaVM: %p (API %d)", g_jvm, api);
             }
         }
 
         if (!g_jvm) {
-            LOGE("Failed to get JavaVM");
+            LOGE("Failed to get JavaVM (API %d)", api);
             return NULL;
         }
     }
