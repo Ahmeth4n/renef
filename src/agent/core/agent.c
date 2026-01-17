@@ -23,38 +23,313 @@
 #include <errno.h>
 #include <dlfcn.h>
 #include <signal.h>
+#include <elf.h>
+#include <sys/mman.h>
+#include <fcntl.h>
 
 #include <agent/globals.h>
 #include <agent/cmd_registry.h>
 #include <agent/hook.h>
 #include <agent/proc.h>
 #include <agent/handlers.h>
+#include <sys/system_properties.h>
 
 static JavaVM* g_jvm = NULL;
 
 typedef jint (*JNI_GetCreatedJavaVMs_t)(JavaVM**, jsize, jsize*);
 
+static int get_device_api_level(void) {
+    static int cached_api = 0;
+    if (cached_api > 0) return cached_api;
+
+    char value[PROP_VALUE_MAX] = {0};
+    if (__system_property_get("ro.build.version.sdk", value) > 0) {
+        cached_api = atoi(value);
+    } else {
+        cached_api = 30;
+    }
+    return cached_api;
+}
+
+// ELF symbol lookup - find symbol in loaded library by parsing ELF
+static void* elf_lookup_symbol(const char* lib_path, uintptr_t load_addr, const char* symbol_name) {
+    int fd = open(lib_path, O_RDONLY);
+    if (fd < 0) {
+        LOGE("Cannot open %s: %s", lib_path, strerror(errno));
+        return NULL;
+    }
+
+    // Get file size
+    off_t file_size = lseek(fd, 0, SEEK_END);
+    lseek(fd, 0, SEEK_SET);
+
+    // Map the file
+    void* map = mmap(NULL, file_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd);
+
+    if (map == MAP_FAILED) {
+        LOGE("mmap failed: %s", strerror(errno));
+        return NULL;
+    }
+
+    void* result = NULL;
+    Elf64_Ehdr* ehdr = (Elf64_Ehdr*)map;
+
+    // Verify ELF magic
+    if (memcmp(ehdr->e_ident, ELFMAG, SELFMAG) != 0) {
+        LOGE("Not a valid ELF file");
+        goto cleanup;
+    }
+
+    // Find the first PT_LOAD segment to calculate proper load bias
+    Elf64_Phdr* phdr = (Elf64_Phdr*)((uint8_t*)map + ehdr->e_phoff);
+    uintptr_t first_load_vaddr = 0;
+    int found_load = 0;
+
+    for (int i = 0; i < ehdr->e_phnum; i++) {
+        if (phdr[i].p_type == PT_LOAD) {
+            first_load_vaddr = phdr[i].p_vaddr;
+            found_load = 1;
+            LOGI("First PT_LOAD vaddr: 0x%lx", (unsigned long)first_load_vaddr);
+            break;
+        }
+    }
+
+    if (!found_load) {
+        LOGE("No PT_LOAD segment found");
+        goto cleanup;
+    }
+
+    // Calculate actual load bias
+    uintptr_t load_bias = load_addr - first_load_vaddr;
+    LOGI("Load bias: 0x%lx (load_addr: 0x%lx - vaddr: 0x%lx)",
+         (unsigned long)load_bias, (unsigned long)load_addr, (unsigned long)first_load_vaddr);
+
+    // Find section headers
+    Elf64_Shdr* shdr = (Elf64_Shdr*)((uint8_t*)map + ehdr->e_shoff);
+    Elf64_Shdr* shstrtab = &shdr[ehdr->e_shstrndx];
+    const char* shstrtab_data = (const char*)map + shstrtab->sh_offset;
+
+    // Find .dynsym and .dynstr sections
+    Elf64_Shdr* dynsym_shdr = NULL;
+    Elf64_Shdr* dynstr_shdr = NULL;
+
+    for (int i = 0; i < ehdr->e_shnum; i++) {
+        const char* section_name = shstrtab_data + shdr[i].sh_name;
+        if (strcmp(section_name, ".dynsym") == 0) {
+            dynsym_shdr = &shdr[i];
+        } else if (strcmp(section_name, ".dynstr") == 0) {
+            dynstr_shdr = &shdr[i];
+        }
+    }
+
+    if (!dynsym_shdr || !dynstr_shdr) {
+        LOGE("Could not find .dynsym or .dynstr");
+        goto cleanup;
+    }
+
+    Elf64_Sym* symtab = (Elf64_Sym*)((uint8_t*)map + dynsym_shdr->sh_offset);
+    const char* strtab = (const char*)map + dynstr_shdr->sh_offset;
+    size_t sym_count = dynsym_shdr->sh_size / sizeof(Elf64_Sym);
+
+    // Search for the symbol
+    for (size_t i = 0; i < sym_count; i++) {
+        const char* name = strtab + symtab[i].st_name;
+        if (strcmp(name, symbol_name) == 0 && symtab[i].st_value != 0) {
+            result = (void*)(load_bias + symtab[i].st_value);
+            LOGI("ELF lookup: Found %s at %p (bias: 0x%lx, st_value: 0x%lx)",
+                 symbol_name, result, (unsigned long)load_bias, (unsigned long)symtab[i].st_value);
+            break;
+        }
+    }
+
+cleanup:
+    munmap(map, file_size);
+    return result;
+}
+
+// Try to find libart.so base from /proc/self/maps and resolve symbol
+static JNI_GetCreatedJavaVMs_t find_jvm_func_from_maps(void) {
+    FILE* fp = fopen("/proc/self/maps", "r");
+    if (!fp) return NULL;
+
+    char line[512];
+    uintptr_t libart_base = 0;
+    char libart_path[256] = {0};
+
+    // Find the FIRST (lowest address) mapping of libart.so - this is the true base
+    while (fgets(line, sizeof(line), fp)) {
+        if (strstr(line, "libart.so")) {
+            unsigned long start;
+            char perms[5];
+            char path[256] = {0};
+            if (sscanf(line, "%lx-%*lx %4s %*x %*s %*d %255s", &start, perms, path) >= 2) {
+                // Take the first (lowest) mapping as base
+                if (libart_base == 0 || start < libart_base) {
+                    libart_base = (uintptr_t)start;
+                    if (path[0]) {
+                        strncpy(libart_path, path, sizeof(libart_path) - 1);
+                    }
+                }
+            }
+        }
+    }
+    fclose(fp);
+
+    if (!libart_base) {
+        LOGI("libart.so not found in /proc/self/maps");
+        return NULL;
+    }
+
+    LOGI("Found libart.so at 0x%lx: %s", libart_base, libart_path);
+
+    // Method 1: Try dlopen with RTLD_NOLOAD first
+    void* handle = dlopen("libart.so", RTLD_NOW | RTLD_NOLOAD);
+    if (!handle && libart_path[0]) {
+        handle = dlopen(libart_path, RTLD_NOW | RTLD_NOLOAD);
+    }
+
+    if (handle) {
+        JNI_GetCreatedJavaVMs_t func = (JNI_GetCreatedJavaVMs_t)dlsym(handle, "JNI_GetCreatedJavaVMs");
+        if (func) {
+            LOGI("Found JNI_GetCreatedJavaVMs via RTLD_NOLOAD: %p", func);
+            return func;
+        }
+    }
+
+    // Method 2: ELF parsing - directly read symbol from file
+    if (libart_path[0]) {
+        JNI_GetCreatedJavaVMs_t func = (JNI_GetCreatedJavaVMs_t)elf_lookup_symbol(
+            libart_path, libart_base, "JNI_GetCreatedJavaVMs");
+        if (func) {
+            return func;
+        }
+    }
+
+    return NULL;
+}
+
+// Android 11-14 (API 30-34): Try multiple approaches
+static JNI_GetCreatedJavaVMs_t get_jvm_func_api30(void) {
+    JNI_GetCreatedJavaVMs_t func = NULL;
+
+    // Method 1: RTLD_DEFAULT (might work in some cases)
+    func = (JNI_GetCreatedJavaVMs_t)dlsym(RTLD_DEFAULT, "JNI_GetCreatedJavaVMs");
+    if (func) {
+        LOGI("API 30-34: Found JNI_GetCreatedJavaVMs via RTLD_DEFAULT");
+        return func;
+    }
+
+    // Method 2: Try RTLD_NOLOAD with libart.so
+    void* handle = dlopen("libart.so", RTLD_NOW | RTLD_NOLOAD);
+    if (handle) {
+        func = (JNI_GetCreatedJavaVMs_t)dlsym(handle, "JNI_GetCreatedJavaVMs");
+        if (func) {
+            LOGI("API 30-34: Found JNI_GetCreatedJavaVMs via RTLD_NOLOAD libart.so");
+            return func;
+        }
+    }
+
+    // Method 3: Try APEX paths (Android 12+ moved ART to APEX)
+    const char* apex_paths[] = {
+        "/apex/com.android.art/lib64/libart.so",
+        "/apex/com.android.art/lib/libart.so",
+        "/apex/com.android.runtime/lib64/libart.so",
+        "/apex/com.android.runtime/lib/libart.so",
+        NULL
+    };
+
+    for (int i = 0; apex_paths[i]; i++) {
+        handle = dlopen(apex_paths[i], RTLD_NOW | RTLD_NOLOAD);
+        if (handle) {
+            func = (JNI_GetCreatedJavaVMs_t)dlsym(handle, "JNI_GetCreatedJavaVMs");
+            if (func) {
+                LOGI("API 30-34: Found JNI_GetCreatedJavaVMs via %s", apex_paths[i]);
+                return func;
+            }
+        }
+    }
+
+    // Method 4: Try libnativehelper.so
+    handle = dlopen("libnativehelper.so", RTLD_NOW | RTLD_NOLOAD);
+    if (handle) {
+        func = (JNI_GetCreatedJavaVMs_t)dlsym(handle, "JNI_GetCreatedJavaVMs");
+        if (func) {
+            LOGI("API 30-34: Found JNI_GetCreatedJavaVMs via libnativehelper.so");
+            return func;
+        }
+    }
+
+    // Method 5: Parse /proc/self/maps to find libart.so
+    func = find_jvm_func_from_maps();
+    if (func) {
+        return func;
+    }
+
+    LOGE("API 30-34: Could not find JNI_GetCreatedJavaVMs");
+    return NULL;
+}
+
+// Android 15+ (API 35+): dlopen works
+static JNI_GetCreatedJavaVMs_t get_jvm_func_api35(void) {
+    void* handle = dlopen("libart.so", RTLD_NOW);
+    if (!handle) {
+        handle = dlopen("libnativehelper.so", RTLD_NOW);
+    }
+    if (handle) {
+        JNI_GetCreatedJavaVMs_t func = (JNI_GetCreatedJavaVMs_t)dlsym(handle, "JNI_GetCreatedJavaVMs");
+        if (func) {
+            LOGI("API 35+: Found JNI_GetCreatedJavaVMs via dlopen");
+        }
+        return func;
+    }
+    return NULL;
+}
+
+// Android 10 and below (API <= 29): dlopen works
+static JNI_GetCreatedJavaVMs_t get_jvm_func_legacy(void) {
+    void* handle = dlopen("libart.so", RTLD_NOW);
+    if (!handle) {
+        handle = dlopen("libnativehelper.so", RTLD_NOW);
+    }
+    if (handle) {
+        JNI_GetCreatedJavaVMs_t func = (JNI_GetCreatedJavaVMs_t)dlsym(handle, "JNI_GetCreatedJavaVMs");
+        if (func) {
+            LOGI("API <=29: Found JNI_GetCreatedJavaVMs via dlopen");
+        }
+        return func;
+    }
+    return NULL;
+}
+
 static JNIEnv* get_jni_env(void) {
     if (!g_jvm) {
-        void* handle = dlopen("libart.so", RTLD_NOW);
-        if (!handle) {
-            handle = dlopen("libnativehelper.so", RTLD_NOW);
+        int api = get_device_api_level();
+        JNI_GetCreatedJavaVMs_t getVMs = NULL;
+
+        if (api >= 35) {
+            // Android 15+ (API 35+)
+            getVMs = get_jvm_func_api35();
+        } else if (api >= 30) {
+            // Android 11-14 (API 30-34)
+            getVMs = get_jvm_func_api30();
+        } else {
+            // Android 10 and below (API <= 29)
+            getVMs = get_jvm_func_legacy();
         }
 
-        if (handle) {
-            JNI_GetCreatedJavaVMs_t getVMs = (JNI_GetCreatedJavaVMs_t)dlsym(handle, "JNI_GetCreatedJavaVMs");
-            if (getVMs) {
-                JavaVM* vms[1];
-                jsize count = 0;
-                if (getVMs(vms, 1, &count) == JNI_OK && count > 0) {
-                    g_jvm = vms[0];
-                    LOGI("Got JavaVM via JNI_GetCreatedJavaVMs: %p", g_jvm);
-                }
+        if (getVMs) {
+            JavaVM* vms[1];
+            jsize count = 0;
+            if (getVMs(vms, 1, &count) == JNI_OK && count > 0) {
+                g_jvm = vms[0];
+                g_java_vm = g_jvm;
+                LOGI("Got JavaVM: %p (API %d)", g_jvm, api);
             }
         }
 
         if (!g_jvm) {
-            LOGE("Failed to get JavaVM");
+            LOGE("Failed to get JavaVM (API %d)", api);
             return NULL;
         }
     }

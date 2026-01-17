@@ -6,6 +6,8 @@
 #include <agent/lua_hook.h>
 #include <agent/lua_memory.h>
 #include <agent/lua_thread.h>
+#include <agent/lua_file.h>
+#include <agent/lua_jni.h>
 #include <agent/proc.h>
 
 #define TAG "RENEF_LUA"
@@ -218,6 +220,8 @@ void register_renef_api(lua_State* L) {
     register_memory_api(L);
     LOGI("Registering thread API...");
     lua_register_thread(L);
+    LOGI("Registering JNI API...");
+    lua_register_jni(L);
     LOGI("All APIs registered");
 }
 
@@ -239,6 +243,7 @@ LuaEngine* lua_engine_create(void) {
 
     register_renef_api(engine->L);
     register_memory_search_api(engine->L);
+    register_file_api(engine->L);
 
     engine->initialized = true;
     LOGI("Lua engine initialized");

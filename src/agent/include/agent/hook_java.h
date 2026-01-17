@@ -18,6 +18,9 @@ typedef struct {
     size_t art_method_size;
 } ArtMethodOffsets;
 
+// ART access flags
+#define kAccNative 0x0100
+
 typedef struct {
     char class_name[256];
     char method_name[128];
@@ -33,6 +36,18 @@ typedef struct {
 
     bool is_hooked;
     int hook_index;
+
+    // For method nativization (Android 11+ interpreter mode support)
+    uint32_t original_access_flags;
+    bool was_nativized;
+
+    // For JNI reflection call (Android 11+ workaround)
+    jclass clazz_global_ref;
+    jmethodID method_id;
+
+    // Stored return value from JNI reflection call
+    uint64_t stored_return_value;
+    bool has_stored_return;
 } JavaHookInfo;
 
 extern JavaHookInfo g_java_hooks[MAX_JAVA_HOOKS];
@@ -59,7 +74,9 @@ int uninstall_all_java_hooks(void);
 
 void* get_java_hook_original_entry(int hook_index);
 
-void java_hook_handler(int hook_index, uint64_t* saved_regs);
+// Hook callback handlers
+void java_hook_on_enter(int hook_index, uint64_t* saved_regs);
+uint64_t java_hook_on_leave(int hook_index, uint64_t ret_val);
 
 void* create_java_hook_trampoline(int hook_index);
 

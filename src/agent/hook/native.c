@@ -5,6 +5,7 @@
 #include <string.h>
 #include <errno.h>
 #include <sys/mman.h>
+#include <pthread.h>
 #include <capstone/capstone.h>
 #include <capstone/arm64.h>
 
@@ -12,6 +13,8 @@ HookInfo g_hooks[MAX_HOOKS];
 int g_hook_count = 0;
 
 __thread int g_current_hook_index = -1;
+
+static pthread_mutex_t g_lua_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 int change_page_protection(void* addr, int prot) {
     void* page = PAGE_START(addr);
@@ -486,11 +489,16 @@ void hook_logger(uint64_t* saved_regs) {
          (unsigned long long)x0, (unsigned long long)x1,
          (unsigned long long)x2, (unsigned long long)x3);
 
+    LOGI("  [DEBUG] g_lua_engine=%p, hook_index=%d", g_lua_engine, g_current_hook_index);
+
     if (g_current_hook_index >= 0 && g_lua_engine) {
         HookInfo* hook = &g_hooks[g_current_hook_index];
+        LOGI("  [DEBUG] onEnter_ref=%d (NOREF=%d)", hook->lua_onEnter_ref, LUA_NOREF);
 
         if (hook->lua_onEnter_ref != LUA_NOREF) {
+            pthread_mutex_lock(&g_lua_mutex);
             lua_State* L = lua_engine_get_state(g_lua_engine);
+            LOGI("  [DEBUG] lua_State=%p", L);
             if (L) {
                 lua_rawgeti(L, LUA_REGISTRYINDEX, hook->lua_onEnter_ref);
                 lua_newtable(L);
@@ -502,12 +510,18 @@ void hook_logger(uint64_t* saved_regs) {
                     lua_rawseti(L, -2, i);
                 }
 
+                LOGI("  [DEBUG] Calling lua_pcall...");
                 if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
                     LOGE("onEnter callback failed: %s", lua_tostring(L, -1));
                     lua_pop(L, 1);
+                } else {
+                    LOGI("  [DEBUG] lua_pcall succeeded");
                 }
             }
+            pthread_mutex_unlock(&g_lua_mutex);
         }
+    } else {
+        LOGI("  [DEBUG] Skipped: engine=%p, index=%d", g_lua_engine, g_current_hook_index);
     }
 }
 
@@ -519,6 +533,7 @@ uint64_t log_return_value(uint64_t ret_val) {
         HookInfo* hook = &g_hooks[g_current_hook_index];
 
         if (hook->lua_onLeave_ref != LUA_NOREF) {
+            pthread_mutex_lock(&g_lua_mutex);
             lua_State* L = lua_engine_get_state(g_lua_engine);
             if (L) {
                 lua_rawgeti(L, LUA_REGISTRYINDEX, hook->lua_onLeave_ref);
@@ -561,6 +576,7 @@ uint64_t log_return_value(uint64_t ret_val) {
                     lua_pop(L, 1);
                 }
             }
+            pthread_mutex_unlock(&g_lua_mutex);
         }
     }
     return ret_val;
