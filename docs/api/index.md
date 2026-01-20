@@ -17,3 +17,4 @@ This section covers all available Lua APIs in Renef.
 - [Thread API]({% link docs/api/thread.md %}) - Thread.call
 - [Console API]({% link docs/api/console.md %}) - console.log, print, colors
 - [File API]({% link docs/api/file.md %}) - File.read, File.exists, File.readlink, File.fdpath
+- [Python API]({% link docs/api/python.md %}) - Python binding for librenef
