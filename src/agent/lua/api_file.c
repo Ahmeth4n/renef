@@ -35,7 +35,41 @@ FileReadResult file_read(const char* path) {
     long size = ftell(file);
     fseek(file, 0, SEEK_SET);
 
-    if (size <= 0 || size > FILE_PATH_MAX * 10) {
+    if (size <= 0) {
+        size_t capacity = 4096;
+        size_t total = 0;
+        result.content = malloc(capacity);
+        if (!result.content) {
+            fclose(file);
+            result.success = false;
+            return result;
+        }
+
+        char buf[1024];
+        size_t n;
+        while ((n = fread(buf, 1, sizeof(buf), file)) > 0) {
+            if (total + n >= capacity) {
+                capacity *= 2;
+                char* newbuf = realloc(result.content, capacity);
+                if (!newbuf) {
+                    free(result.content);
+                    fclose(file);
+                    result.success = false;
+                    return result;
+                }
+                result.content = newbuf;
+            }
+            memcpy(result.content + total, buf, n);
+            total += n;
+        }
+        fclose(file);
+        result.content[total] = '\0';
+        result.size = total;
+        result.success = true;
+        return result;
+    }
+
+    if (size > FILE_PATH_MAX * 10) {
         fclose(file);
         result.success = false;
         return result;

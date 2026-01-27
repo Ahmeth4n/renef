@@ -29,5 +29,6 @@ extern JavaVM* g_java_vm;
 extern int g_default_hook_type;
 
 JNIEnv* get_current_jni_env(void);
+JNIEnv* get_jni_env(void);
 
 #endif

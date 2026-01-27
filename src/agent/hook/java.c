@@ -20,7 +20,27 @@ static ArtMethodOffsets g_offsets = {0};
 static bool g_java_hook_initialized = false;
 static pthread_mutex_t g_java_hook_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-static pthread_mutex_t g_java_lua_mutex = PTHREAD_MUTEX_INITIALIZER;
+// Use recursive mutex to allow nested hook callbacks (parent calling child)
+static pthread_mutex_t g_java_lua_mutex;
+static pthread_once_t g_lua_mutex_init_once = PTHREAD_ONCE_INIT;
+
+static void init_recursive_lua_mutex(void) {
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&g_java_lua_mutex, &attr);
+    pthread_mutexattr_destroy(&attr);
+    LOGI("Initialized recursive Lua mutex for nested hooks");
+}
+
+// Thread-local hook call stack for tracking nested calls
+#define MAX_HOOK_CALL_DEPTH 16
+typedef struct {
+    int hook_indices[MAX_HOOK_CALL_DEPTH];
+    int depth;
+} HookCallStack;
+
+static __thread HookCallStack g_hook_call_stack = {{0}, 0};
 
 static __thread int g_current_java_hook_index = -1;
 
@@ -390,6 +410,8 @@ void* jmethodid_to_art_method(JNIEnv* env, jmethodID method_id, jclass clazz) {
 }
 
 
+static uint64_t java_hook_call_original(int hook_index, uint64_t* saved_regs);
+
 void* create_java_hook_trampoline(int hook_index) {
     void* trampoline = mmap(NULL, PAGE_SIZE,
                             PROT_READ | PROT_WRITE | PROT_EXEC,
@@ -431,19 +453,12 @@ void* create_java_hook_trampoline(int hook_index) {
     code[idx++] = 0x58000010;  // ldr x16, [pc, #offset]
     code[idx++] = 0xD63F0200;  // blr x16
 
-    // Restore argument registers
-    code[idx++] = 0xA94007E0;  // ldp x0, x1, [sp, #0]
-    code[idx++] = 0xA9410FE2;  // ldp x2, x3, [sp, #16]
-    code[idx++] = 0xA94217E4;  // ldp x4, x5, [sp, #32]
-    code[idx++] = 0xA9431FE6;  // ldp x6, x7, [sp, #48]
-    code[idx++] = 0xA94427E8;  // ldp x8, x9, [sp, #64]
-
-    // Call original entry point
-    int original_ldr_idx = idx;
+    code[idx++] = 0xD2800000 | ((hook_index & 0xFFFF) << 5);
+    code[idx++] = 0x910003E1;
+    int call_original_ldr_idx = idx;
     code[idx++] = 0x58000010;  // ldr x16, [pc, #offset]
     code[idx++] = 0xD63F0200;  // blr x16
 
-    // Save return value
     code[idx++] = 0xF90083E0;  // str x0, [sp, #256]
 
     // Call onLeave(hook_index, retval)
@@ -471,8 +486,8 @@ void* create_java_hook_trampoline(int hook_index) {
     *(uint64_t*)(&code[idx]) = (uint64_t)java_hook_on_leave;
     idx += 2;
 
-    int original_addr_idx = idx;
-    *(uint64_t*)(&code[idx]) = 0;
+    int call_original_addr_idx = idx;
+    *(uint64_t*)(&code[idx]) = (uint64_t)java_hook_call_original;
     idx += 2;
 
     *(uint64_t*)(&code[idx]) = (uint64_t)hook_index;
@@ -482,8 +497,8 @@ void* create_java_hook_trampoline(int hook_index) {
     int onenter_offset = (onenter_addr_idx - onenter_ldr_idx) * 4;
     code[onenter_ldr_idx] = 0x58000010 | ((onenter_offset / 4) << 5);
 
-    int original_offset = (original_addr_idx - original_ldr_idx) * 4;
-    code[original_ldr_idx] = 0x58000010 | ((original_offset / 4) << 5);
+    int call_original_offset = (call_original_addr_idx - call_original_ldr_idx) * 4;
+    code[call_original_ldr_idx] = 0x58000010 | ((call_original_offset / 4) << 5);
 
     int onleave_offset = (onleave_addr_idx - onleave_ldr_idx) * 4;
     code[onleave_ldr_idx] = 0x58000010 | ((onleave_offset / 4) << 5);
@@ -661,11 +676,11 @@ static void call_original_via_jni(JavaHookInfo* hook, uint64_t* saved_regs) {
         return;
     }
 
-    JNIEnv* env = (JNIEnv*)saved_regs[0];
+    JNIEnv* env = get_jni_env();
     jobject receiver = (jobject)saved_regs[1];
 
     if (!env || !hook->method_id) {
-        LOGE("call_original_via_jni: env=%p, method_id=%p", env, hook->method_id);
+        LOGE("call_original_via_jni: env=%p, method_id=%p (get_jni_env failed?)", env, hook->method_id);
         hook->stored_return_value = 0;
         hook->has_stored_return = true;
         return;
@@ -685,11 +700,27 @@ static void call_original_via_jni(JavaHookInfo* hook, uint64_t* saved_regs) {
         return;
     }
 
+    void** entry_point_ptr = (void**)((uintptr_t)hook->art_method + offsets->entry_point_offset);
+
+    void* page_entry = (void*)((uintptr_t)entry_point_ptr & ~(PAGE_SIZE - 1));
+    if (mprotect(page_entry, PAGE_SIZE, PROT_READ | PROT_WRITE) != 0) {
+        LOGE("call_original_via_jni: mprotect entry_point failed: %s", strerror(errno));
+        hook->stored_return_value = 0;
+        hook->has_stored_return = true;
+        return;
+    }
+
     uint32_t current_flags = *access_flags_ptr;
+    void* current_entry = *entry_point_ptr;
+
     *access_flags_ptr = hook->original_access_flags;  // Remove kAccNative
+    *entry_point_ptr = hook->original_entry_point;    // Restore original entry point
+
     __builtin___clear_cache((char*)access_flags_ptr, (char*)access_flags_ptr + 4);
+    __builtin___clear_cache((char*)entry_point_ptr, (char*)entry_point_ptr + 8);
 
     LOGI("  Temporarily restored flags: 0x%x -> 0x%x", current_flags, hook->original_access_flags);
+    LOGI("  Temporarily restored entry_point: %p -> %p", current_entry, hook->original_entry_point);
 
     jvalue args[6] = {0};
     const char* sig = hook->method_sig;
@@ -833,7 +864,9 @@ static void call_original_via_jni(JavaHookInfo* hook, uint64_t* saved_regs) {
     }
 
     *access_flags_ptr = current_flags;
+    *entry_point_ptr = current_entry;
     __builtin___clear_cache((char*)access_flags_ptr, (char*)access_flags_ptr + 4);
+    __builtin___clear_cache((char*)entry_point_ptr, (char*)entry_point_ptr + 8);
 
     hook->has_stored_return = true;
     LOGI("  Result: 0x%llx", (unsigned long long)hook->stored_return_value);
@@ -845,29 +878,40 @@ static uint64_t call_interpreter_bridge_asm(void* bridge, uint64_t* regs) {
     uint64_t result = 0;
 
     __asm__ volatile(
-        "sub sp, sp, #80\n"
-        "stp x29, x30, [sp, #0]\n"
-        "str x19, [sp, #16]\n"
-        "str %[bridge], [sp, #24]\n"
-        "str %[regs], [sp, #32]\n"
-        "str %[result_ptr], [sp, #40]\n"
-        "ldr x9, [sp, #32]\n"
-        "ldr x19, [x9, #152]\n"
-        "ldr x0, [x9, #0]\n"
-        "ldr x1, [x9, #8]\n"
-        "ldr x2, [x9, #16]\n"
-        "ldr x3, [x9, #24]\n"
-        "ldr x4, [x9, #32]\n"
-        "ldr x5, [x9, #40]\n"
-        "ldr x6, [x9, #48]\n"
-        "ldr x7, [x9, #56]\n"
-        "ldr x9, [sp, #24]\n"
-        "blr x9\n"
-        "ldr x9, [sp, #40]\n"
-        "str x0, [x9]\n"
-        "ldr x19, [sp, #16]\n"
-        "ldp x29, x30, [sp, #0]\n"
-        "add sp, sp, #80\n"
+        // Prologue: proper frame setup for ART compatibility
+        "stp x29, x30, [sp, #-96]!\n"  // Push frame and allocate 96 bytes
+        "mov x29, sp\n"                 // Set frame pointer (CRITICAL for nested calls)
+        "stp x19, x20, [sp, #16]\n"     // Save more callee-saved regs
+        "stp x21, x22, [sp, #32]\n"
+
+        // Store our parameters in callee-saved locations
+        "mov x20, %[bridge]\n"          // x20 = bridge (callee-saved)
+        "mov x21, %[regs]\n"            // x21 = regs (callee-saved)
+        "mov x22, %[result_ptr]\n"      // x22 = result_ptr (callee-saved)
+
+        // Load x19 from regs[19] (ART thread pointer for some ART versions)
+        "ldr x19, [x21, #152]\n"        // x19 = regs[19]
+
+        // Load argument registers from saved_regs
+        "ldr x0, [x21, #0]\n"           // x0 = regs[0] (ArtMethod*)
+        "ldr x1, [x21, #8]\n"           // x1 = regs[1] (receiver/this)
+        "ldr x2, [x21, #16]\n"          // x2 = regs[2] (arg1)
+        "ldr x3, [x21, #24]\n"          // x3 = regs[3] (arg2)
+        "ldr x4, [x21, #32]\n"          // x4 = regs[4] (arg3)
+        "ldr x5, [x21, #40]\n"          // x5 = regs[5] (arg4)
+        "ldr x6, [x21, #48]\n"          // x6 = regs[6] (arg5)
+        "ldr x7, [x21, #56]\n"          // x7 = regs[7] (arg6)
+
+        // Call the original entry point
+        "blr x20\n"
+
+        // Store result - x22 is preserved across calls (callee-saved)
+        "str x0, [x22]\n"
+
+        // Epilogue: restore callee-saved registers
+        "ldp x21, x22, [sp, #32]\n"
+        "ldp x19, x20, [sp, #16]\n"
+        "ldp x29, x30, [sp], #96\n"     // Restore frame and deallocate
 
         :
         : [bridge] "r"(bridge), [regs] "r"(regs), [result_ptr] "r"(&result)
@@ -955,6 +999,51 @@ static void call_original_via_interpreter(JavaHookInfo* hook, uint64_t* saved_re
     hook->has_stored_return = true;
 }
 
+static uint64_t java_hook_call_original(int hook_index, uint64_t* saved_regs) {
+    if (hook_index < 0 || hook_index >= g_java_hook_count) {
+        LOGE("java_hook_call_original: Invalid hook index: %d", hook_index);
+        return 0;
+    }
+
+    JavaHookInfo* hook = &g_java_hooks[hook_index];
+
+    LOGI("java_hook_call_original: hook #%d, was_nativized=%d",
+         hook_index, hook->was_nativized);
+
+    const ArtMethodOffsets* offsets = get_art_method_offsets();
+    uint32_t* access_flags_ptr = (uint32_t*)((uintptr_t)hook->art_method + offsets->access_flags_offset);
+    void** entry_point_ptr = (void**)((uintptr_t)hook->art_method + offsets->entry_point_offset);
+
+    uint32_t current_flags = *access_flags_ptr;
+    void* current_entry = *entry_point_ptr;
+
+    void* page = (void*)((uintptr_t)access_flags_ptr & ~(PAGE_SIZE - 1));
+    if (mprotect(page, PAGE_SIZE, PROT_READ | PROT_WRITE) != 0) {
+        LOGE("java_hook_call_original: mprotect failed: %s", strerror(errno));
+        return 0;
+    }
+
+    *access_flags_ptr = hook->original_access_flags;
+    *entry_point_ptr = hook->original_entry_point;
+    __builtin___clear_cache((char*)access_flags_ptr, (char*)access_flags_ptr + 4);
+    __builtin___clear_cache((char*)entry_point_ptr, (char*)entry_point_ptr + 8);
+
+    LOGI("  Temporarily restored: flags 0x%x -> 0x%x, entry %p -> %p",
+         current_flags, hook->original_access_flags,
+         current_entry, hook->original_entry_point);
+
+    uint64_t result = call_interpreter_bridge_asm(hook->original_entry_point, saved_regs);
+
+    LOGI("  Original entry point returned: 0x%llx", (unsigned long long)result);
+
+    *access_flags_ptr = current_flags;
+    *entry_point_ptr = current_entry;
+    __builtin___clear_cache((char*)access_flags_ptr, (char*)access_flags_ptr + 4);
+    __builtin___clear_cache((char*)entry_point_ptr, (char*)entry_point_ptr + 8);
+
+    return result;
+}
+
 void java_hook_on_enter(int hook_index, uint64_t* saved_regs) {
     if (hook_index < 0 || hook_index >= g_java_hook_count) {
         LOGE("Invalid Java hook index: %d", hook_index);
@@ -962,10 +1051,21 @@ void java_hook_on_enter(int hook_index, uint64_t* saved_regs) {
     }
 
     JavaHookInfo* hook = &g_java_hooks[hook_index];
+
+    if (g_hook_call_stack.depth < MAX_HOOK_CALL_DEPTH) {
+        g_hook_call_stack.hook_indices[g_hook_call_stack.depth] = hook_index;
+        g_hook_call_stack.depth++;
+    } else {
+        LOGW("Hook call stack overflow! depth=%d, skipping hook #%d",
+             g_hook_call_stack.depth, hook_index);
+        return;
+    }
+
     g_current_java_hook_index = hook_index;
 
-    LOGI("=== Java Hook #%d onEnter: %s.%s%s ===",
-         hook_index, hook->class_name, hook->method_name, hook->method_sig);
+    LOGI("=== Java Hook #%d onEnter: %s.%s%s (depth=%d) ===",
+         hook_index, hook->class_name, hook->method_name, hook->method_sig,
+         g_hook_call_stack.depth);
 
     uint64_t x0 = saved_regs[0];
     uint64_t x1 = saved_regs[1];
@@ -975,13 +1075,6 @@ void java_hook_on_enter(int hook_index, uint64_t* saved_regs) {
     LOGI("  Args: X0=0x%llx X1=0x%llx X2=0x%llx X3=0x%llx",
          (unsigned long long)x0, (unsigned long long)x1,
          (unsigned long long)x2, (unsigned long long)x3);
-
-    if (hook->was_nativized) {
-        LOGI("Method was nativized - callbacks-only mode (original method skipped)");
-        LOGI("  To return a value, use onLeave callback to provide replacement");
-        hook->stored_return_value = 0;
-        hook->has_stored_return = true;
-    }
 
     if (hook->lua_onEnter_ref != LUA_NOREF && g_lua_engine) {
         pthread_mutex_lock(&g_java_lua_mutex);
@@ -1022,8 +1115,9 @@ uint64_t java_hook_on_leave(int hook_index, uint64_t ret_val) {
 
     JavaHookInfo* hook = &g_java_hooks[hook_index];
 
-    LOGI("=== Java Hook #%d onLeave: %s.%s%s ===",
-         hook_index, hook->class_name, hook->method_name, hook->method_sig);
+    LOGI("=== Java Hook #%d onLeave: %s.%s%s (depth=%d) ===",
+         hook_index, hook->class_name, hook->method_name, hook->method_sig,
+         g_hook_call_stack.depth);
     LOGI("  Return value: 0x%llx (%lld)", (unsigned long long)ret_val, (long long)ret_val);
 
     if (hook->lua_onLeave_ref != LUA_NOREF && g_lua_engine) {
@@ -1091,11 +1185,22 @@ uint64_t java_hook_on_leave(int hook_index, uint64_t ret_val) {
         pthread_mutex_unlock(&g_java_lua_mutex);
     }
 
+    if (g_hook_call_stack.depth > 0) {
+        g_hook_call_stack.depth--;
+        if (g_hook_call_stack.depth > 0) {
+            g_current_java_hook_index = g_hook_call_stack.hook_indices[g_hook_call_stack.depth - 1];
+        } else {
+            g_current_java_hook_index = -1;
+        }
+    }
+
     return ret_val;
 }
 
 
 int java_hook_init(JNIEnv* env) {
+    pthread_once(&g_lua_mutex_init_once, init_recursive_lua_mutex);
+
     if (g_java_hook_initialized) {
         return 0;
     }
@@ -1375,9 +1480,7 @@ int install_java_hook(JNIEnv* env,
         __builtin___clear_cache((char*)access_flags_ptr, (char*)access_flags_ptr + 4);
         hook->was_nativized = true;
 
-        LOGW("Method was nativized - original behavior will be skipped (callbacks only)");
-        original_entry = (void*)nativized_method_stub;
-        hook->original_entry_point = original_entry;
+        LOGI("Method was nativized - will use JNI reflection to call original (nested hooks supported)");
     } else if (need_nativize) {
         LOGI("Nativizing method: setting kAccNative flag (0x%x -> 0x%x)",
              original_flags, original_flags | kAccNative);
@@ -1385,17 +1488,6 @@ int install_java_hook(JNIEnv* env,
         __builtin___clear_cache((char*)access_flags_ptr, (char*)access_flags_ptr + 4);
     }
 
-    uint64_t* tramp_data = (uint64_t*)trampoline;
-    for (int i = 0; i < PAGE_SIZE / 8; i++) {
-        if (tramp_data[i] == (uint64_t)java_hook_on_enter &&
-            tramp_data[i + 1] == (uint64_t)java_hook_on_leave &&
-            tramp_data[i + 2] == 0) {
-            tramp_data[i + 2] = (uint64_t)original_entry;
-            __builtin___clear_cache((char*)&tramp_data[i + 2], (char*)&tramp_data[i + 3]);
-            LOGI("Filled original entry point at trampoline offset %d", (int)(i + 2) * 8);
-            break;
-        }
-    }
 
     LOGI("Setting entry_point: %p -> %p", *entry_point_ptr, trampoline);
     *entry_point_ptr = trampoline;

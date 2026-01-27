@@ -302,7 +302,7 @@ static JNI_GetCreatedJavaVMs_t get_jvm_func_legacy(void) {
     return NULL;
 }
 
-static JNIEnv* get_jni_env(void) {
+JNIEnv* get_jni_env(void) {
     if (!g_jvm) {
         int api = get_device_api_level();
         JNI_GetCreatedJavaVMs_t getVMs = NULL;
