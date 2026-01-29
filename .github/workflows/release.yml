@@ -302,72 +302,11 @@ jobs:
           Dynamic Instrumentation Toolkit for Android ARM64
 
           ### What's New
-            - **Java String Return Value Support**: Read and modify Java String return values in onLeave callbacks. The \`retval\` parameter now includes both raw pointer (\`retval.raw\`) and string value (\`retval.value\`). Use \`JNI.string()\` to create new strings.
+            - **Agent Path Fix**: Fixed an issue where the agent file was being deleted by unlink() after injection, causing crashes and injection failures on subsequent runs. The payload path is now consistent across all injection stages. See [PR #13](https://github.com/Ahmeth4n/renef/pull/13) for details.
 
-            \`\`\`lua
-            -- Test script for Java String return values
-            -- Target: com.example.reneftestapp
+            Tested on PC and Termux environments across Google Pixel and Xiaomi Redmi devices. All injection and hook operations verified stable.
 
-            print("[*] Starting Java String hook test...")
-
-            -- Hook childHook - modify return value
-            hook("com/example/reneftestapp/MainActivity", "childHook", "(Ljava/lang/String;)Ljava/lang/String;", {
-                onEnter = function(args)
-                    print("[+] childHook called")
-                    print("    this = " .. string.format("0x%x", args[1]))
-                    print("    param (jstring ref) = " .. string.format("0x%x", args[2]))
-                end,
-                onLeave = function(retval)
-                    print("[+] childHook onLeave")
-                    print("    Original: \\"" .. (retval.value or "nil") .. "\\"")
-
-                    -- Modify the return value!
-                    local newValue = "HOOKED BY RENEF!"
-                    print("    Replacing with: \\"" .. newValue .. "\\"")
-
-                    return JNI.string(newValue)
-                end
-            })
-
-            -- Hook parentHook - just observe
-            hook("com/example/reneftestapp/MainActivity", "parentHook", "(Ljava/lang/String;)Ljava/lang/String;", {
-                onEnter = function(args)
-                    print("[+] parentHook called")
-                    print("    this = " .. string.format("0x%x", args[1]))
-                    print("    param (jstring ref) = " .. string.format("0x%x", args[2]))
-                end,
-                onLeave = function(retval)
-                    print("[+] parentHook onLeave")
-                    print("    Return (raw ref): " .. string.format("0x%x", retval.raw))
-                    if retval.value then
-                        print("    Return (string): \\"" .. retval.value .. "\\"")
-                    end
-                    return retval.raw
-                end
-            })
-
-            print("[+] Hooks installed!")
-            print("[*] childHook return value will be replaced with 'HOOKED BY RENEF!'")
-            \`\`\`
-
-            - **Android Client for Termux**: Run renef client directly on device without a PC. Build with \`make client-android\` and deploy with \`make deploy-local\`.
-
-            \`\`\`bash
-            # Build Android client
-            make client-android
-            make deploy-local
-
-            # In Termux/ADB shell
-            su
-            /data/local/tmp/renef_server &
-            /data/local/tmp/renef --local
-            \`\`\`
-
-            - **Nested Java Hook Support**: Full support for recursive/nested Java method hooks with proper call stack tracking.
-
-            - **File API Fix**: File.read() now correctly handles /proc files and other special files.
-
-            *Thanks to @AbhiTheModder and @FatalSec for their feedback.*
+            *Thanks to @AbhiTheModder and @FatalSec for their feedback and contributions.*
 
           ${COMMITS}
 
