@@ -301,10 +301,10 @@ deploy: server payload
 	adb push $(RENEF_SERVER) /data/local/tmp/renef_server
 	adb shell chmod +x /data/local/tmp/renef_server
 	@echo "Pushing payload to hidden location..."
-	adb push $(PAYLOAD_SO) /sdcard/Android/.cache
-	adb shell chmod +x /sdcard/Android/.cache
+	adb push $(PAYLOAD_SO) /data/local/tmp/libagent.so
+	adb shell chmod 777 /data/local/tmp/libagent.so
 	@echo "Setting SELinux context (Samsung fix)..."
-	-adb shell su -c "chcon u:object_r:app_data_file:s0 /sdcard/Android/.cache" 2>/dev/null || true
+	-adb shell su -c "chcon u:object_r:app_data_file:s0 /data/local/tmp/libagent.so" 2>/dev/null || true
 	@echo "Deployed"
 
 install: deploy
@@ -408,8 +408,9 @@ deploy-local: server payload client-android
 	adb push $(RENEF_CLIENT_ANDROID) /data/local/tmp/renef
 	adb shell chmod +x /data/local/tmp/renef_server
 	adb shell chmod +x /data/local/tmp/renef
-	adb push $(PAYLOAD_SO) /sdcard/Android/.cache
-	-adb shell su -c "chcon u:object_r:app_data_file:s0 /sdcard/Android/.cache" 2>/dev/null || true
+	adb push $(PAYLOAD_SO) /data/local/tmp/libagent.so
+	adb shell chmod 777 /data/local/tmp/libagent.so
+	-adb shell su -c "chcon u:object_r:app_data_file:s0 /data/local/tmp/libagent.so" 2>/dev/null || true
 	@echo ""
 	@echo "Deployed to /data/local/tmp/"
 	@echo "Usage in Termux/ADB shell:"
