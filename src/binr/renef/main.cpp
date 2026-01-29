@@ -808,7 +808,31 @@ int main(int argc, char *argv[]) {
 
     while (true) {
         ColorManager& cm = ColorManager::instance();
-        std::string prompt = cm.prompt_color + "renef> ";
+        std::string prompt;
+
+        #ifdef RENEF_NO_READLINE
+        #define RL_PROMPT_START ""
+        #define RL_PROMPT_END ""
+        #else
+        #define RL_PROMPT_START "\001"
+        #define RL_PROMPT_END "\002"
+        #endif
+
+        if (!attach_pid.empty()){
+            if (cm.prompt_color != RESET) {
+                prompt = RL_PROMPT_START + cm.prompt_color + RL_PROMPT_END + "renef (" + attach_pid + ")> " + RL_PROMPT_START RESET RL_PROMPT_END;
+            } else {
+                prompt = "renef " RL_PROMPT_START + std::string(cm.get("YELLOW")) + RL_PROMPT_END + "(" + attach_pid + ")" + RL_PROMPT_START RESET RL_PROMPT_END + "> ";
+            }
+        }else if(!spawn_app.empty()){
+            if (cm.prompt_color != RESET) {
+                prompt = RL_PROMPT_START + cm.prompt_color + RL_PROMPT_END + "renef (" + spawn_app + ")> " + RL_PROMPT_START RESET RL_PROMPT_END;
+            } else {
+                prompt = "renef " RL_PROMPT_START + std::string(cm.get("YELLOW")) + RL_PROMPT_END + "(" + spawn_app + ")" + RL_PROMPT_START RESET RL_PROMPT_END + "> ";
+            }
+        }else{
+            prompt = RL_PROMPT_START + cm.prompt_color + RL_PROMPT_END + "renef> " + RL_PROMPT_START RESET RL_PROMPT_END;
+        }
         char* input = readline(prompt.c_str());
         std::cout << RESET;
 
@@ -1086,10 +1110,19 @@ int main(int argc, char *argv[]) {
                         pid = std::stoi(response.substr(space_pos + 1));
                     } catch (...) {}
                 }
+                std::string args = command.substr(6);
+                size_t arg_start = args.find_first_not_of(" \t");
+                if (arg_start != std::string::npos) {
+                    size_t arg_end = args.find_first_of(" \t", arg_start);
+                    spawn_app = args.substr(arg_start, arg_end - arg_start);
+                    attach_pid.clear();
+                }
             }
             else if (command.rfind("attach ", 0) == 0) {
                 try {
                     pid = std::stoi(command.substr(7));
+                    attach_pid = std::to_string(pid);
+                    spawn_app.clear();
                 } catch (...) {}
             }
 
