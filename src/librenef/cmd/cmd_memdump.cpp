@@ -76,7 +76,7 @@ public:
         }
 
         std::stringstream cmd;
-        cmd << "memdump " << std::hex << address << " " << std::dec << size << "\n";
+        cmd << "md " << std::hex << address << " " << std::dec << size << "\n";
         socket_helper.send_data(cmd.str().c_str(), cmd.str().length());
 
         char* buffer = new char[size + 256];

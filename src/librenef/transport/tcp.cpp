@@ -133,8 +133,8 @@ ssize_t TCPTransport::receive_data(void* buffer, size_t size) {
 
     ssize_t received = recv(client_fd, buffer, size, 0);
     if (received < 0) {
-        if (errno == EINTR) {
-            return 0;
+        if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+            return 0; 
         }
         std::cerr << "recv() failed: " << strerror(errno) << "\n";
         return -1;

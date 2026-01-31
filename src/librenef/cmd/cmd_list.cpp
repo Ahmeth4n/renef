@@ -45,7 +45,7 @@ public:
         }
 
         std::string filter = extract_filter(clean_cmd.c_str(), clean_cmd.length());
-        std::string command = build_agent_command("list_apps", filter);
+        std::string command = build_agent_command("la", filter);
         socket_helper.send_data(command.c_str(), command.length());
 
         char buffer[4096];

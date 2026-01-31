@@ -319,6 +319,25 @@ install: deploy
 	@echo "Run on device: adb shell /data/local/tmp/renef_server"
 	@echo "Run on PC: ./$(RENEF_CLIENT)"
 
+gadget-forward:
+ifndef PID
+	$(error PID is required. Usage: make gadget-forward PID=<pid>)
+endif
+	@adb forward --remove tcp:1907 2>/dev/null || true
+	adb forward tcp:1907 localabstract:renef_pl_$(PID)
+	@echo ""
+	@echo "Gadget mode forward ready!"
+	@echo "Run: ./$(RENEF_CLIENT) -g $(PID)"
+
+# List current ADB forwards
+forward-list:
+	@adb forward --list
+
+# Remove all ADB forwards
+forward-clean:
+	@adb forward --remove-all
+	@echo "All forwards removed"
+
 test: install
 	@echo "=== Starting test ==="
 	@adb shell "nohup /data/local/tmp/renef_server > /dev/null 2>&1 &"

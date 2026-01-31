@@ -121,13 +121,13 @@ static int cmd_help(int fd, const char* args) {
 
 void register_builtin_commands(void) {
     cmd_register("ping", cmd_ping);
-    cmd_register("list_apps", cmd_list_apps);
+    cmd_register("la", cmd_list_apps); 
     cmd_register("hooks", cmd_hooks);
     cmd_register("unhook", cmd_unhook);
-    cmd_register("hook", cmd_hook);
-    cmd_register("eval", cmd_eval);
+    cmd_register("hookn", cmd_hook);
+    cmd_register("exec", cmd_eval);
     cmd_register("ms", cmd_memscan);
-    cmd_register("memdump", cmd_memdump);
+    cmd_register("md", cmd_memdump);
     cmd_register("sec", cmd_sec);
     cmd_register("help", cmd_help);
 }

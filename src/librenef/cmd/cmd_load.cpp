@@ -66,7 +66,7 @@ public:
             return CommandResult(false, "Socket connection failed");
         }
 
-        std::string command = "eval " + lua_script + "\n";
+        std::string command = "exec " + lua_script + "\n";
         socket_helper.send_data(command.c_str(), command.length());
 
         char buffer[4096];

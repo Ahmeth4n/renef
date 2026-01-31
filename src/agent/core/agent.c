@@ -417,10 +417,10 @@ static void route_command(int client_fd, const char* cmd, size_t cmd_len) {
     static char main_cmd[65536];
     char filter[256] = {0};
 
-    const char* is_eval_cmd = strstr(cmd, " eval ");
+    const char* is_exec_cmd = strstr(cmd, " exec ");
     const char* tilde = NULL;
 
-    if (!is_eval_cmd) {
+    if (!is_exec_cmd) {
         tilde = strchr(cmd, '~');
     }
 

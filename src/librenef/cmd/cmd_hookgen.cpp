@@ -124,7 +124,7 @@ public:
                        "end\n";
         }
 
-        std::string command = "eval " + lua_code + "\n";
+        std::string command = "exec " + lua_code + "\n";
         ssize_t sent = socket_helper.send_data(command.c_str(), command.length());
 
         if (sent <= 0) {

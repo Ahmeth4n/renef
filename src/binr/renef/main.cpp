@@ -13,6 +13,9 @@
 #include <renef/cmd.h>
 #include <renef/colors.h>
 #include <renef/server_connection.h>
+#include <renef/crypto.h>
+#include "transport/uds.h"
+#include "transport/tcp.h"
 #ifndef RENEF_NO_READLINE
 #include <readline/readline.h>
 #include <readline/history.h>
@@ -20,6 +23,7 @@
 #include <termios.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/socket.h>
 #include <atomic>
 #include "tui/memscan_tui.h"
 #include <renef/plugin.h>
@@ -28,6 +32,10 @@ static std::vector<std::pair<std::string, std::string>> global_commands;
 static std::string g_device_id;
 static bool g_device_ready = false;
 static bool g_local_mode = false;
+static bool g_gadget_mode = false;
+static int g_gadget_pid = 0;
+static std::string g_gadget_key;
+static std::unique_ptr<ITransport> g_gadget_transport;
 #define DEFAULT_TCP_PORT 1907
 #define DEFAULT_UDS_PATH "@com.android.internal.os.RuntimeInit"
 
@@ -553,6 +561,37 @@ bool check_quit_key() {
 }
 
 std::string send_command(const std::string& command) {
+    if (g_gadget_mode && g_gadget_transport && g_gadget_transport->is_connected()) {
+        std::string full_cmd = g_gadget_key + " " + command + "\n";
+        g_gadget_transport->send_data(full_cmd.c_str(), full_cmd.length());
+
+        std::string response;
+        char buffer[4096];
+        auto start = std::chrono::steady_clock::now();
+        bool got_data = false;
+
+        while (true) {
+            ssize_t n = g_gadget_transport->receive_data(buffer, sizeof(buffer) - 1);
+            if (n > 0) {
+                buffer[n] = '\0';
+                response += buffer;
+                got_data = true;
+                start = std::chrono::steady_clock::now();
+            } else {
+                auto elapsed = std::chrono::steady_clock::now() - start;
+                if (elapsed > std::chrono::milliseconds(got_data ? 200 : 10000)) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+        }
+
+        if (!response.empty()) {
+            ColorManager& cm = ColorManager::instance();
+            std::cout << cm.response_color << response << RESET;
+            std::cout.flush();
+        }
+        return response;
+    }
+
     ServerConnection& conn = ServerConnection::instance();
 
     if (!conn.is_connected()) {
@@ -652,6 +691,10 @@ int main(int argc, char *argv[]) {
         else if (arg.rfind("--hook=", 0) == 0) {
             hook_type = arg.substr(7);
         }
+        else if ((arg == "-g" || arg == "--gadget") && i + 1 < argc) {
+            g_gadget_pid = std::stoi(argv[++i]);
+            g_gadget_mode = true;
+        }
         else if (arg == "-h" || arg == "--help") {
             std::cout << "Usage: " << argv[0] << " [options]\n";
             std::cout << "Options:\n";
@@ -659,6 +702,7 @@ int main(int argc, char *argv[]) {
             std::cout << "  -l, --load <script>      Load and execute Lua script\n";
             std::cout << "  -a, --attach <pid>       Attach to process by PID\n";
             std::cout << "  -s, --spawn <app>        Spawn application\n";
+            std::cout << "  -g, --gadget <pid>       Gadget mode: connect directly to injected agent (no server)\n";
             std::cout << "  --hook <type>            Hook type: trampoline (default) or pltgot\n";
             std::cout << "  --local                  Local mode: connect via UDS (for Termux/on-device)\n";
             std::cout << "  -h, --help               Show this help\n";
@@ -667,6 +711,7 @@ int main(int argc, char *argv[]) {
             std::cout << "  " << argv[0] << " -s com.example.app --hook pltgot\n";
             std::cout << "  " << argv[0] << " -a 1234 --hook=pltgot -l hook.lua\n";
             std::cout << "  " << argv[0] << " --local -s com.example.app    # On-device usage\n";
+            std::cout << "  " << argv[0] << " -g 12345 -l hook.lua          # Gadget mode (rootless)\n";
             return 0;
         }else if(arg == "--local"){
             // Local mode: connect directly via UDS, skip ADB
@@ -675,8 +720,55 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    // Gadget mode: connect directly to agent (no server needed)
+    if (g_gadget_mode) {
+        std::cout << "[*] Gadget mode: connecting to agent (PID: " << g_gadget_pid << ")...\n";
+
+        int fd = -1;
+
+        if (g_local_mode) {
+            // Local mode (Termux): connect via UDS directly to agent
+            std::cout << "[*] Using UDS (local mode)\n";
+            auto uds = std::make_unique<UDSTransport>("", true);
+            fd = uds->connect_to_server(std::to_string(g_gadget_pid));
+            g_gadget_transport = std::move(uds);
+        } else {
+            // Remote mode (PC): connect via TCP (requires: adb forward tcp:1907 localabstract:renef_pl_<pid>)
+            std::cout << "[*] Using TCP (run: adb forward tcp:" << DEFAULT_TCP_PORT
+                      << " localabstract:renef_pl_" << g_gadget_pid << ")\n";
+            auto tcp = std::make_unique<TCPTransport>(DEFAULT_TCP_PORT, "127.0.0.1");
+            fd = tcp->connect_to_server("127.0.0.1");
+            g_gadget_transport = std::move(tcp);
+        }
+
+        if (fd < 0) {
+            std::cerr << "ERROR: Failed to connect to agent\n";
+            if (g_local_mode) {
+                std::cerr << "Make sure the app with libagent.so is running (PID: " << g_gadget_pid << ")\n";
+            } else {
+                std::cerr << "Make sure:\n";
+                std::cerr << "  1. The app with embedded libagent.so is running\n";
+                std::cerr << "  2. ADB forward is set: adb forward tcp:" << DEFAULT_TCP_PORT
+                          << " localabstract:renef_pl_" << g_gadget_pid << "\n";
+            }
+            return 1;
+        }
+
+        struct timeval tv;
+        tv.tv_sec = 0;
+        tv.tv_usec = 100000;
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+        g_gadget_key = generate_auth_key();
+
+        std::string con_cmd = "con " + g_gadget_key + "\n";
+        g_gadget_transport->send_data(con_cmd.c_str(), con_cmd.length());
+
+        std::cout << "[*] Session established with agent\n";
+        g_device_ready = true;
+    }
     // Skip ADB setup in local mode
-    if (!g_local_mode) {
+    else if (!g_local_mode) {
         bool device_connected = check_adb_devices(device_id);
         g_device_id = device_id;
 

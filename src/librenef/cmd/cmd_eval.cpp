@@ -45,10 +45,10 @@ public:
 
         const char* lua_code = cmd_buffer + 5;
 
-        std::string command = std::string("eval ") + lua_code + "\n";
-        fprintf(stderr, "[DEBUG eval.cpp] Sending %zu bytes to agent\n", command.length());
+        std::string command = std::string("exec ") + lua_code + "\n";
+        fprintf(stderr, "[DEBUG exec] Sending %zu bytes to agent\n", command.length());
         ssize_t sent = socket_helper.send_data(command.c_str(), command.length());
-        fprintf(stderr, "[DEBUG eval.cpp] Actually sent %zd bytes\n", sent);
+        fprintf(stderr, "[DEBUG exec] Actually sent %zd bytes\n", sent);
 
         int flags = fcntl(sock, F_GETFL, 0);
         fcntl(sock, F_SETFL, flags | O_NONBLOCK);
