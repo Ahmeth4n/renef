@@ -51,6 +51,8 @@ adb shell /data/local/tmp/renef_server
 | `make install` | Deploy + setup port forwarding |
 | `make clean` | Remove build artifacts |
 | `make setup` | Setup Lua and Capstone dependencies |
+| `make client-android` | Build client for Android (Termux) |
+| `make deploy-local` | Deploy client to device for local execution |
 
 ---
 
@@ -204,6 +206,47 @@ ANDROID_SERIAL=device_id make deploy
 # Or use -s flag
 adb -s device_id push ...
 ```
+
+---
+
+## Android Client (Termux)
+
+{: .note }
+> Added in **v0.2.3**. Run Renef directly on your Android device without a PC.
+
+You can build and run the Renef client directly on your Android device using Termux:
+
+```bash
+# Build client for Android
+make client-android
+
+# Deploy to device
+make deploy-local
+```
+
+### Running on Device
+
+```bash
+# Open Termux on your rooted device
+# Navigate to deployment directory
+cd /data/local/tmp
+
+# Start server
+./renef_server &
+
+# Run client
+./renef_client
+
+# Use normally
+renef> spawn com.example.app
+```
+
+### Benefits
+
+- No PC required after initial setup
+- Lower latency (local communication)
+- Portable testing setup
+- Works over SSH/remote sessions
 
 ---
 

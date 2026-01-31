@@ -39,6 +39,7 @@ Usage: ./build/renef [options]
 Options:
   -s, --spawn <package>    Spawn app by package name
   -a, --attach <pid>       Attach to running process by PID
+  -g, --gadget <pid>       Connect to embedded gadget agent (non-root)
   -d, --device <id>        Specify ADB device ID (for multiple devices)
   -l, --load <script>      Load Lua script after connection
   -w, --watch              Enable auto-watch mode after loading script
@@ -52,6 +53,7 @@ Options:
 |--------|-------------|
 | `-s <package>` | Spawns a new process from the given package name. The app will be started and payload injected automatically. |
 | `-a <pid>` | Attaches to an already running process by its PID. Use `adb shell pidof <package>` to find the PID. |
+| `-g <pid>` | Connects to an embedded gadget agent (v0.3.0+). Use this for non-rooted devices with patched APKs. See [Gadget Mode]({% link docs/gadget-mode.md %}). |
 | `-d <device>` | Specifies which ADB device to use when multiple devices are connected. Use `adb devices` to list available devices. |
 | `-l <script>` | Loads and executes a Lua script immediately after successful injection. Can be combined with `-s` or `-a`. |
 | `-w` | Enables auto-watch mode. After loading the script, Renef monitors hook output in real-time. Press Ctrl+C to exit watch mode. |
@@ -86,6 +88,9 @@ Options:
 
 # Multiple scripts can be loaded inside REPL after connection
 renef> l script1.lua script2.lua -w
+
+# Gadget mode (non-rooted device with patched APK)
+./build/renef -g 12345 -l script.lua
 ```
 
 ### Hook Types

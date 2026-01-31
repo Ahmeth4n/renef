@@ -52,6 +52,9 @@ Hook a Java method via JNI.
 {: .note }
 > **Android 10+ Supported**: Java hooks with `onEnter` and `onLeave` callbacks work on Android 10 (API 29) and later. Tested and verified on Android 10, 11, 12, 13, 14, 15, and 16.
 
+{: .highlight }
+> **Nested Hooks Supported** (v0.2.2+): Java hooks can be nested recursively with proper call stack tracking. Hook callbacks can safely call other hooked methods.
+
 ```lua
 hook("com/example/MainActivity", "getSecret", "(Ljava/lang/String;)Ljava/lang/String;", {
     onEnter = function(args)
