@@ -43,6 +43,7 @@ Options:
   -d, --device <id>        Specify ADB device ID (for multiple devices)
   -l, --load <script>      Load Lua script after connection
   -w, --watch              Enable auto-watch mode after loading script
+  -v, --verbose            Show logcat debug output from agent
   --hook <type>            Hook engine type: trampoline (default) or pltgot
   -h, --help               Show help message
 ```
@@ -57,6 +58,7 @@ Options:
 | `-d <device>` | Specifies which ADB device to use when multiple devices are connected. Use `adb devices` to list available devices. |
 | `-l <script>` | Loads and executes a Lua script immediately after successful injection. Can be combined with `-s` or `-a`. |
 | `-w` | Enables auto-watch mode. After loading the script, Renef monitors hook output in real-time. Press Ctrl+C to exit watch mode. |
+| `-v, --verbose` | Enables verbose mode. Shows agent debug output from logcat during `spawn`, `attach`, and script loading (`l`). Useful for troubleshooting injection and hook issues. |
 | `--hook <type>` | Selects the hooking engine. `trampoline` (default) uses inline hooks, `pltgot` hooks via PLT/GOT table. |
 
 ### Examples
@@ -91,6 +93,12 @@ renef> l script1.lua script2.lua -w
 
 # Gadget mode (non-rooted device with patched APK)
 ./build/renef -g 12345 -l script.lua
+
+# Spawn with verbose output (shows agent debug logs)
+./build/renef -s com.example.app -v
+
+# Load script with verbose to debug hook issues
+./build/renef -s com.example.app -l hook.lua -v
 ```
 
 ### Hook Types
