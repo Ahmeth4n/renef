@@ -158,7 +158,8 @@ AGENT_SRCS := src/agent/core/agent.c \
               src/agent/lua/api_memory.c \
               src/agent/lua/api_thread.c \
               src/agent/lua/api_file.c \
-              src/agent/lua/api_jni.c
+              src/agent/lua/api_jni.c \
+              src/agent/lua/api_java.c
 
 .PHONY: all clean clean-capstone clean-all client server payload deploy install test build-capstone setup setup-lua setup-asio setup-capstone-host release debug plugins client-android deploy-local
 

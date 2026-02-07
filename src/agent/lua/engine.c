@@ -9,6 +9,7 @@
 #include <agent/lua_thread.h>
 #include <agent/lua_file.h>
 #include <agent/lua_jni.h>
+#include <agent/lua_java.h>
 #include <agent/proc.h>
 
 #define TAG "RENEF_LUA"
@@ -223,6 +224,8 @@ void register_renef_api(lua_State* L) {
     lua_register_thread(L);
     LOGI("Registering JNI API...");
     lua_register_jni(L);
+    LOGI("Registering Java API...");
+    lua_register_java(L);
     LOGI("All APIs registered");
 }
 
