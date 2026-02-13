@@ -53,6 +53,33 @@ hook("com/example/reneftestapp/MainActivity", "hookTest", "(Ljava/lang/String;)L
 print("[+] Hook installed")
 ```
 
+## Java Hook — Skipping the Original Method
+
+Use `args.skip = true` to prevent the original Java method from executing. This is useful for void methods that throw exceptions on failure (like certificate verification):
+
+```lua
+-- Skip a void method that throws on failure
+hook("com/example/security/PinChecker", "verify",
+    "([Ljava/security/cert/X509Certificate;Ljava/lang/String;)V", {
+    onEnter = function(args)
+        args.skip = true  -- Original never called, no exception thrown
+        print("[*] PinChecker.verify bypassed")
+    end
+})
+```
+
+For boolean-returning methods, use `onLeave` instead:
+
+```lua
+-- Override a boolean return value
+hook("com/example/security/CertValidator", "isValid",
+    "(Ljava/lang/String;)Z", {
+    onLeave = function(retval)
+        return 1  -- Always return true
+    end
+})
+```
+
 ## Memory Scanning Example
 
 ```lua

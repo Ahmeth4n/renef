@@ -167,6 +167,81 @@ JNI signatures describe method parameter types and return type.
 
 ---
 
+## instance.raw
+
+Access the raw ART `mirror::Object*` pointer from a `JavaInstance` userdata. This is useful when you need to pass Java objects as raw pointers to hook callbacks (e.g., modifying arguments via `args[N] = value`).
+
+```lua
+local TrustManager = Java.use("javax/net/ssl/X509TrustManager")
+local tm = TrustManager:new("()V")
+print(string.format("Raw ART pointer: 0x%x", tm.raw))
+```
+
+**Returns:** Integer — raw ART `mirror::Object*` pointer (decoded from JNI global reference)
+
+{: .warning }
+Raw pointers are only valid while the object is alive. Do not cache them across GC cycles.
+
+---
+
+## Java.registerClass(definition)
+
+Register a new Java class at runtime that implements one or more interfaces. Method calls on the registered class are dispatched to Lua callbacks.
+
+```lua
+local EmptyTrustManager = Java.registerClass({
+    name = "com.renef.EmptyTrustManager",
+    implements = {
+        "javax/net/ssl/X509TrustManager"
+    },
+    methods = {
+        checkClientTrusted = function(self, args)
+            -- Do nothing (accept all)
+        end,
+        checkServerTrusted = function(self, args)
+            -- Do nothing (accept all)
+        end,
+        getAcceptedIssuers = function(self, args)
+            return nil
+        end
+    }
+})
+```
+
+**Parameters:**
+- `definition` - Table with:
+  - `name` - Fully qualified class name with `.` separators
+  - `implements` - Array of interface names with `/` separators
+  - `methods` - Table mapping method names to Lua callback functions
+
+**Returns:** `JavaInstance` userdata of the registered class
+
+{: .note }
+Uses a bridge DEX with `java.lang.reflect.Proxy` and an `InvocationHandler` that routes calls to the Lua callback registry.
+
+---
+
+## Java.array(type, elements)
+
+Create a Java array from Lua values. Returns a `JavaInstance` userdata holding a `jobjectArray`.
+
+```lua
+-- Array of TrustManagers
+local tm = EmptyTrustManager
+local tm_array = Java.array("javax/net/ssl/TrustManager", { tm })
+
+-- Array of strings
+local str_array = Java.array("java/lang/String", { "hello", "world" })
+```
+
+**Parameters:**
+- `type` - Element type as class name with `/` separators
+- `elements` - Lua table (array) of elements. Supports `string`, `JavaInstance`, and `nil`.
+
+**Returns:** `JavaInstance` userdata wrapping the `jobjectArray`
+
+---
+
 ## Complete Example
 
 ```lua

@@ -152,6 +152,89 @@ exec Memory.dump(Memory.search("session_verify", "libflutter.so"))
 
 ---
 
+## Java SSL Pinning Bypass
+
+For apps that use Java-level SSL verification (Conscrypt, OkHttp, Network Security Config, etc.), Renef can hook the certificate verification methods directly using Java hooks.
+
+### Quick Start
+
+Renef ships with a comprehensive SSL unpinning script that covers 30+ targets. The script is also available on [Renef Hookshare](https://hook.renef.io/@ahmethan/universal-ssl-pinning-bypass-script).
+
+```bash
+renef> spawn com.example.app
+renef> l scripts/ssl_unpin.lua
+```
+
+### How It Works
+
+Java SSL verification methods like `checkServerTrusted` are void methods that throw exceptions on failure. By using `args.skip = true`, we skip calling the original method entirely — the method returns cleanly without throwing, which the caller interprets as "certificate verified."
+
+```lua
+-- Bypass TrustManagerImpl.checkServerTrusted
+hook("com/android/org/conscrypt/TrustManagerImpl", "checkServerTrusted",
+    "([Ljava/security/cert/X509Certificate;Ljava/lang/String;)V", {
+    onEnter = function(args)
+        args.skip = true
+        print("[*] TrustManagerImpl.checkServerTrusted bypassed")
+    end
+})
+```
+
+{: .note }
+`args.skip = true` is essential on Android 16+ where calling the original method on nested hooked methods can crash ART's stack walker. See [Hook API - args.skip](/docs/api/hook/) for details.
+
+### Custom TrustManager with Java API
+
+For more control, you can replace the app's TrustManager entirely using `Java.registerClass`:
+
+```lua
+local EmptyTrustManager = Java.registerClass({
+    name = "com.renef.EmptyTrustManager",
+    implements = { "javax/net/ssl/X509TrustManager" },
+    methods = {
+        checkClientTrusted = function(self, args) end,
+        checkServerTrusted = function(self, args) end,
+        getAcceptedIssuers = function(self, args) return nil end
+    }
+})
+
+local tm_array = Java.array("javax/net/ssl/TrustManager", { EmptyTrustManager })
+
+hook("javax/net/ssl/SSLContext", "init",
+    "(Ljavax/net/ssl/KeyManager;[Ljavax/net/ssl/TrustManager;Ljava/security/SecureRandom;)V", {
+    onEnter = function(args)
+        args[3] = tm_array.raw
+        print("[*] SSLContext.init: TrustManagers replaced")
+    end
+})
+```
+
+### Covered Targets (ssl_unpin.lua)
+
+| Target | Method |
+|--------|--------|
+| **Conscrypt** | `TrustManagerImpl`, `ConscryptEngine`, `Platform`, `OpenSSLSocketImpl` |
+| **Network Security Config** | `NetworkSecurityTrustManager`, `RootTrustManager` |
+| **OkHttp3** | `CertificatePinner.check`, `OkHostnameVerifier.verify` |
+| **OkHttp2 (Squareup)** | `CertificatePinner.check`, `OkHostnameVerifier.verify` |
+| **Trustkit** | `PinningTrustManager.checkServerTrusted` |
+| **Apache** | `AbstractVerifier.verify`, `Harmony OpenSSLSocketImpl` |
+| **WebView** | `WebViewClient.onReceivedSslError` |
+| **Chromium Cronet** | `CronetEngine.Builder.enablePublicKeyPinningBypassForLocalTrustAnchors` |
+| **Others** | Fabric, Netty, Appcelerator, Boye, Appmattus, CWAC-Netsecurity, Cordova |
+
+### Android 16 Notes
+
+Android 16 changed some Conscrypt method signatures:
+
+| Method | Old Signature | New Signature (Android 16) |
+|--------|--------------|---------------------------|
+| `ConscryptEngine.verifyCertificateChain` | `([JLjava/lang/String;)V` | `([[BLjava/lang/String;)V` |
+
+The `ssl_unpin.lua` script hooks both variants for maximum compatibility.
+
+---
+
 ## Basic SSL Bypass (libssl.so)
 
 For apps using standard OpenSSL/BoringSSL via `libssl.so`:

@@ -78,13 +78,56 @@ hook("com/example/MainActivity", "getSecret", "(Ljava/lang/String;)Ljava/lang/St
 - `signature` - JNI signature (e.g., "(Ljava/lang/String;)Ljava/lang/String;")
 - `callbacks` - Table with `onEnter` and/or `onLeave` functions
 
-**Java hook arguments:**
-- `args[0]` - `this` pointer (for instance methods) or class reference (for static methods)
-- `args[1..n]` - Method arguments as raw pointers
+**Java hook arguments (`onEnter`):**
+- `args[0]` - ArtMethod pointer (internal, not useful to scripts)
+- `args[1]` - `this` pointer (instance methods) or first parameter (static methods)
+- `args[2..n]` - Method parameters as raw pointers
+- `args.class` - Class name (string)
+- `args.method` - Method name (string)
+- `args.signature` - JNI signature (string)
+- `args.isStatic` - Whether method is static (boolean)
+- `args.skip` - Set to `true` to skip calling the original method entirely
 
-**Modifying return values:**
-- Use `Jni.newStringUTF()` to create new String objects
-- Return the raw pointer from `onLeave` to replace the original return value
+Arguments are modifiable: `args[2] = newValue` will change the parameter passed to the original method.
+
+**`args.skip` — Skip Original Method:**
+
+Setting `args.skip = true` in `onEnter` prevents the original Java method from being called. The hook returns immediately with a zero value, and `onLeave` still runs normally.
+
+This is essential for void methods that signal failure by throwing exceptions (e.g., `checkServerTrusted`). Skipping the original avoids both the exception and potential ART stack walk crashes when multiple hooked methods are nested on the same call stack.
+
+```lua
+hook("javax/net/ssl/X509TrustManager", "checkServerTrusted",
+    "([Ljava/security/cert/X509Certificate;Ljava/lang/String;)V", {
+    onEnter = function(args)
+        args.skip = true  -- Don't call original, method returns cleanly
+        print("[*] checkServerTrusted bypassed")
+    end
+})
+```
+
+**Modifying return values (`onLeave`):**
+
+| Return from onLeave | Effect |
+|---|---|
+| `nil` (or no return) | Original return value unchanged |
+| integer | Sets x0 register directly |
+| boolean (`true`/`false`) | Sets x0 to 1 or 0 |
+| `{__jni_type="string", value="..."}` | Creates a new Java String and returns it |
+| `{__jni_type="int", value=N}` | Sets x0 to N |
+| `Jni.newStringUTF("...")` | Returns raw pointer to new Java String |
+
+```lua
+-- Return a modified string
+onLeave = function(retval)
+    return Jni.newStringUTF("Modified!")
+end
+
+-- Return a boolean (for verify() methods)
+onLeave = function(retval)
+    return 1  -- true
+end
+```
 
 ---
 
