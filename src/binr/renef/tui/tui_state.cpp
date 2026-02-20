@@ -161,3 +161,13 @@ TuiState::WatchAction TuiState::consume_watch_action() {
     watch_action_ = WatchAction::NONE;
     return a;
 }
+
+void TuiState::set_watching(bool watching) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    watching_ = watching;
+}
+
+bool TuiState::is_watching() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return watching_;
+}

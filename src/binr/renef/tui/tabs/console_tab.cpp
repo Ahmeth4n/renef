@@ -5,6 +5,8 @@
 #include <ftxui/component/component.hpp>
 #include <ftxui/dom/elements.hpp>
 #include <algorithm>
+#include <fstream>
+#include <sstream>
 
 using namespace ftxui;
 
@@ -151,6 +153,11 @@ public:
         }
 
         if (event == Event::Return && !input_content_.empty() && !state_->is_busy()) {
+            if (state_->is_watching() && input_content_ != "watch stop") {
+                state_->append_console_output("Watch active - type 'watch stop' first");
+                state_->request_refresh();
+                return true;
+            }
             suggest_index_ = -1;
             submit_command();
             return true;
@@ -243,8 +250,88 @@ private:
         }
 
         if (cmd == "q") {
-            state_->append_console_output("Use Ctrl+Q to exit TUI.");
+            state_->append_console_output("Use Ctrl+C to exit TUI.");
             state_->request_refresh();
+            return;
+        }
+
+        // l: load script(s) locally and send as exec
+        if (cmd.length() > 2 && cmd[0] == 'l' && cmd[1] == ' ') {
+            std::string args = cmd.substr(2);
+            bool watch_flag = false;
+
+            // Parse -w / --watch flag
+            size_t wpos = args.find("--watch");
+            if (wpos == std::string::npos) wpos = args.find("-w");
+            if (wpos != std::string::npos) {
+                watch_flag = true;
+                size_t flen = (args.find("--watch", wpos) != std::string::npos) ? 7 : 2;
+                std::string before = args.substr(0, wpos);
+                std::string after = (wpos + flen < args.length()) ? args.substr(wpos + flen) : "";
+                args = before + after;
+            }
+
+            // Trim
+            size_t start = args.find_first_not_of(" \t");
+            size_t end = args.find_last_not_of(" \t");
+            if (start == std::string::npos) {
+                state_->append_console_output("ERROR: No file specified");
+                state_->request_refresh();
+                return;
+            }
+            args = args.substr(start, end - start + 1);
+
+            // Parse file paths
+            std::vector<std::string> file_paths;
+            std::istringstream iss(args);
+            std::string fpath;
+            while (iss >> fpath) {
+                file_paths.push_back(fpath);
+            }
+
+            // Read each file locally and build exec commands
+            std::vector<std::string> exec_cmds;
+            for (const auto& path : file_paths) {
+                std::ifstream file(path);
+                if (!file.is_open()) {
+                    state_->append_console_output("ERROR: Cannot read file: " + path);
+                    continue;
+                }
+                std::stringstream buf;
+                buf << file.rdbuf();
+                std::string lua_code = buf.str();
+                if (lua_code.empty()) {
+                    state_->append_console_output("ERROR: Empty file: " + path);
+                    continue;
+                }
+                exec_cmds.push_back("exec " + lua_code);
+                state_->append_console_output("  loaded " + path);
+            }
+
+            if (exec_cmds.empty()) {
+                state_->request_refresh();
+                return;
+            }
+
+            bool do_watch = watch_flag;
+            CommandAdapter::execute_async(exec_cmds[0], state_,
+                [this, exec_cmds, do_watch](const std::string& result) {
+                    if (!result.empty()) {
+                        state_->append_console_output(result);
+                    }
+                    // Send remaining files sequentially
+                    for (size_t i = 1; i < exec_cmds.size(); i++) {
+                        std::string r = CommandAdapter::execute_server(exec_cmds[i]);
+                        if (!r.empty()) {
+                            state_->append_console_output(r);
+                        }
+                    }
+                    if (do_watch) {
+                        state_->request_watch_action(TuiState::WatchAction::START);
+                        state_->request_view(2);
+                        state_->append_console_output("Auto-watch enabled");
+                    }
+                });
             return;
         }
 
@@ -297,10 +384,50 @@ private:
             return;
         }
 
+        // Handle spawn/attach: parse PID, update connection state, set registry
+        bool is_spawn = (cmd.rfind("spawn ", 0) == 0);
+        bool is_attach = (cmd.rfind("attach ", 0) == 0);
+        std::string spawn_or_attach_cmd = cmd;
+
         CommandAdapter::execute_async(cmd, state_,
-            [this](const std::string& result) {
+            [this, is_spawn, is_attach, spawn_or_attach_cmd](const std::string& result) {
                 if (!result.empty()) {
                     state_->append_console_output(result);
+                }
+
+                if ((is_spawn || is_attach) && result.rfind("OK", 0) == 0) {
+                    int pid = 0;
+                    std::string target_name;
+
+                    if (is_spawn) {
+                        // Parse "OK <pid>"
+                        size_t space_pos = result.find(' ');
+                        if (space_pos != std::string::npos) {
+                            try { pid = std::stoi(result.substr(space_pos + 1)); } catch (...) {}
+                        }
+                        // Extract package name
+                        std::string args = spawn_or_attach_cmd.substr(6);
+                        size_t start = args.find_first_not_of(" \t");
+                        if (start != std::string::npos) {
+                            size_t end = args.find_first_of(" \t", start);
+                            target_name = args.substr(start, end - start);
+                        }
+                    } else {
+                        // attach <pid>
+                        try { pid = std::stoi(spawn_or_attach_cmd.substr(7)); } catch (...) {}
+                        target_name = std::to_string(pid);
+                    }
+
+                    if (pid > 0) {
+                        CommandRegistry::instance().set_current_pid(pid);
+
+                        ConnectionInfo info;
+                        info.connected = true;
+                        info.target_pid = pid;
+                        info.target_process = target_name;
+                        info.mode = "TCP";
+                        state_->set_connection_info(info);
+                    }
                 }
             });
     }

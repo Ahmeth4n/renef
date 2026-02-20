@@ -206,7 +206,7 @@ int TuiApp::run() {
         }
         help_items.push_back(text("  Tab") | bold | color(Color::White));
         help_items.push_back(text(" view") | color(dim_c));
-        help_items.push_back(text("  ^Q") | bold | color(Color::White));
+        help_items.push_back(text("  ^C") | bold | color(Color::White));
         help_items.push_back(text(" quit") | color(dim_c));
         help_items.push_back(filler());
         if (panel_active) {
@@ -240,8 +240,8 @@ int TuiApp::run() {
             return true;
         }
 
-        // Ctrl+Q: quit
-        if (event == Event::Special("\x11")) {
+        // Ctrl+C: quit
+        if (event == Event::Special("\x03")) {
             screen.Exit();
             return true;
         }

@@ -90,6 +90,10 @@ public:
     void request_watch_action(WatchAction action);
     WatchAction consume_watch_action();
 
+    // Watch streaming state (blocks console commands during watch)
+    void set_watching(bool watching);
+    bool is_watching() const;
+
 private:
     mutable std::mutex mutex_;
     ftxui::ScreenInteractive* screen_ = nullptr;
@@ -106,4 +110,5 @@ private:
     std::string response_color_ = "white";
     int requested_view_ = -1;
     WatchAction watch_action_ = WatchAction::NONE;
+    bool watching_ = false;
 };

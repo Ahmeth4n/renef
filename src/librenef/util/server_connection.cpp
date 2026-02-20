@@ -50,6 +50,8 @@ bool ServerConnection::connect(const std::string& host, int port) {
         }
 
         std::cout << "[*] Connected to UDS: " << host << "\n";
+        connected_host_ = host;
+        connected_port_ = port;
         return true;
     }
 
@@ -73,6 +75,8 @@ bool ServerConnection::connect(const std::string& host, int port) {
         return false;
     }
 
+    connected_host_ = host;
+    connected_port_ = port;
     return true;
 }
 
@@ -141,4 +145,16 @@ std::string ServerConnection::receive(int timeout_ms) {
     }
 
     return result;
+}
+
+std::string ServerConnection::get_host() const {
+    return connected_host_;
+}
+
+int ServerConnection::get_port() const {
+    return connected_port_;
+}
+
+int ServerConnection::get_socket_fd() const {
+    return sock_fd;
 }

@@ -54,7 +54,7 @@ void CommandAdapter::execute_async(const std::string& command,
         state->set_busy(true);
         state->request_refresh();
 
-        std::string result = CommandAdapter::execute(command);
+        std::string result = CommandAdapter::execute_server(command);
 
         state->set_busy(false);
         if (callback) {
@@ -67,7 +67,9 @@ void CommandAdapter::execute_async(const std::string& command,
 std::string CommandAdapter::execute_server(const std::string& command) {
     auto& conn = ServerConnection::instance();
     if (!conn.is_connected()) {
-        return "ERROR: Not connected to server\n";
+        if (!conn.connect()) {
+            return "ERROR: Not connected to server\n";
+        }
     }
     if (!conn.send(command + "\n")) {
         return "ERROR: Failed to send command\n";

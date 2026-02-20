@@ -2,11 +2,13 @@
 #include <ftxui/component/component.hpp>
 #include <ftxui/dom/elements.hpp>
 #include <renef/cmd.h>
+#include <renef/server_connection.h>
 #include <thread>
 #include <atomic>
 #include <poll.h>
 #include <unistd.h>
 #include <sys/socket.h>
+#include <cstring>
 
 using namespace ftxui;
 
@@ -120,22 +122,32 @@ private:
     void start_watching() {
         if (watching_.load()) return;
         watching_.store(true);
+        state_->set_watching(true);
         state_->request_refresh();
 
         std::thread([this]() {
-            auto& registry = CommandRegistry::instance();
-            auto& sh = registry.get_socket_helper();
-            int sock = sh.get_socket_fd();
-
-            if (sock < 0) {
-                state_->append_log("[Watch] no active agent connection");
-                state_->request_refresh();
+            auto& conn = ServerConnection::instance();
+            if (!conn.is_connected()) {
+                state_->append_log("[Watch] not connected to server");
                 watching_.store(false);
+                state_->set_watching(false);
                 state_->request_refresh();
                 return;
             }
 
+            // Send watch command on the main connection
+            if (!conn.send("watch\n")) {
+                state_->append_log("[Watch] failed to send watch command");
+                watching_.store(false);
+                state_->set_watching(false);
+                state_->request_refresh();
+                return;
+            }
+
+            // Stream from the main connection's socket
+            int sock = conn.get_socket_fd();
             char buffer[4096];
+
             while (watching_.load()) {
                 struct pollfd pfd = {sock, POLLIN, 0};
                 int ret = poll(&pfd, 1, 500);
@@ -152,7 +164,18 @@ private:
                     }
                 }
             }
+
+            // Exit watch mode on server
+            conn.send("q\n");
+            // Flush remaining data
+            struct pollfd pfd = {sock, POLLIN, 0};
+            if (poll(&pfd, 1, 200) > 0) {
+                char flush[4096];
+                recv(sock, flush, sizeof(flush), MSG_DONTWAIT);
+            }
+
             watching_.store(false);
+            state_->set_watching(false);
             state_->request_refresh();
         }).detach();
     }
