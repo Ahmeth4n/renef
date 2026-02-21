@@ -13,7 +13,7 @@
 
 ---
 
-Renef lets you hook native and Java functions, scan and patch memory, and inject into running processes on Android ARM64 â€” all through a Lua scripting interface. No ptrace required.
+Renef lets you hook native and Java functions, scan and patch memory, and inject into running processes on Android ARM64, all through a Lua scripting interface. No ptrace required.
 
 For comprehensive information, see [renef.io](https://renef.io).
 
@@ -54,4 +54,4 @@ Browse and share community hooks at **[hook.renef.io](https://hook.renef.io)** â
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+Apache-2.0 License - see [LICENSE](LICENSE) for details.
