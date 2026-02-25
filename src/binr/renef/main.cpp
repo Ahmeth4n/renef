@@ -74,22 +74,227 @@ static std::map<std::string, std::vector<std::pair<std::string, std::string>>> l
 static bool g_lua_context = false;
 
 #ifdef RENEF_NO_READLINE
-// Simple readline replacement for builds without readline library
+// Line editor with history and escape sequence handling for builds without readline
+static std::vector<std::string> simple_history;
+
+static void simple_add_history(const char* line) {
+    if (line && line[0] != '\0') {
+        simple_history.push_back(line);
+    }
+}
+
 static char* simple_readline(const char* prompt) {
     std::cout << prompt;
     std::cout.flush();
+
+    struct termios oldt, newt;
+    if (tcgetattr(STDIN_FILENO, &oldt) != 0) {
+        // Fallback: if terminal control unavailable, use basic getline
+        std::string line;
+        if (!std::getline(std::cin, line)) return nullptr;
+        char* r = (char*)malloc(line.size() + 1);
+        if (r) strcpy(r, line.c_str());
+        return r;
+    }
+
+    newt = oldt;
+    newt.c_lflag &= ~(ICANON | ECHO);
+    newt.c_cc[VMIN] = 1;
+    newt.c_cc[VTIME] = 0;
+    tcsetattr(STDIN_FILENO, TCSANOW, &newt);
+
     std::string line;
-    if (!std::getline(std::cin, line)) {
-        return nullptr;
+    size_t cursor = 0;
+    int hist_idx = (int)simple_history.size();
+    std::string saved_line;
+
+    auto redraw = [&]() {
+        // Move cursor to start of line, clear it, reprint
+        std::cout << "\r" << prompt << line;
+        // Clear any leftover characters after line
+        std::cout << "\x1b[K";
+        // Move cursor to correct position
+        size_t total_prompt_len = strlen(prompt) + line.size();
+        size_t target = strlen(prompt) + cursor;
+        if (target < total_prompt_len) {
+            std::cout << "\x1b[" << (total_prompt_len - target) << "D";
+        }
+        std::cout.flush();
+    };
+
+    while (true) {
+        char ch;
+        ssize_t n = read(STDIN_FILENO, &ch, 1);
+        if (n <= 0) {
+            tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+            return nullptr;
+        }
+
+        if (ch == '\n' || ch == '\r') {
+            std::cout << "\n";
+            break;
+        } else if (ch == 4) { // Ctrl+D
+            if (line.empty()) {
+                std::cout << "\n";
+                tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+                return nullptr;
+            }
+        } else if (ch == 127 || ch == 8) { // Backspace
+            if (cursor > 0) {
+                line.erase(cursor - 1, 1);
+                cursor--;
+                redraw();
+            }
+        } else if (ch == 3) { // Ctrl+C
+            line.clear();
+            cursor = 0;
+            std::cout << "^C\n" << prompt;
+            std::cout.flush();
+        } else if (ch == 1) { // Ctrl+A - Home
+            cursor = 0;
+            redraw();
+        } else if (ch == 5) { // Ctrl+E - End
+            cursor = line.size();
+            redraw();
+        } else if (ch == 21) { // Ctrl+U - clear line
+            line.clear();
+            cursor = 0;
+            redraw();
+        } else if (ch == 11) { // Ctrl+K - kill to end of line
+            line.erase(cursor);
+            redraw();
+        } else if (ch == 12) { // Ctrl+L - clear screen
+            std::cout << "\x1b[2J\x1b[H";
+            redraw();
+        } else if (ch == '\x1b') { // Escape sequence
+            char seq[3];
+            ssize_t r1 = read(STDIN_FILENO, &seq[0], 1);
+            if (r1 <= 0) continue;
+
+            if (seq[0] == '[') {
+                ssize_t r2 = read(STDIN_FILENO, &seq[1], 1);
+                if (r2 <= 0) continue;
+
+                switch (seq[1]) {
+                    case 'A': // Up arrow - previous history
+                        if (hist_idx > 0) {
+                            if (hist_idx == (int)simple_history.size())
+                                saved_line = line;
+                            hist_idx--;
+                            line = simple_history[hist_idx];
+                            cursor = line.size();
+                            redraw();
+                        }
+                        break;
+                    case 'B': // Down arrow - next history
+                        if (hist_idx < (int)simple_history.size()) {
+                            hist_idx++;
+                            if (hist_idx == (int)simple_history.size())
+                                line = saved_line;
+                            else
+                                line = simple_history[hist_idx];
+                            cursor = line.size();
+                            redraw();
+                        }
+                        break;
+                    case 'C': // Right arrow
+                        if (cursor < line.size()) {
+                            cursor++;
+                            redraw();
+                        }
+                        break;
+                    case 'D': // Left arrow
+                        if (cursor > 0) {
+                            cursor--;
+                            redraw();
+                        }
+                        break;
+                    case 'H': // Home
+                        cursor = 0;
+                        redraw();
+                        break;
+                    case 'F': // End
+                        cursor = line.size();
+                        redraw();
+                        break;
+                    case '3': { // Delete key (ESC[3~)
+                        char tilde;
+                        read(STDIN_FILENO, &tilde, 1);
+                        if (tilde == '~' && cursor < line.size()) {
+                            line.erase(cursor, 1);
+                            redraw();
+                        }
+                        break;
+                    }
+                    default:
+                        // Consume unknown sequences silently
+                        if (seq[1] >= '0' && seq[1] <= '9') {
+                            char tmp;
+                            read(STDIN_FILENO, &tmp, 1); // consume ~
+                        }
+                        break;
+                }
+            } else if (seq[0] == 'O') {
+                // Application mode arrow keys (ESC O A/B/C/D)
+                ssize_t r2 = read(STDIN_FILENO, &seq[1], 1);
+                if (r2 <= 0) continue;
+                switch (seq[1]) {
+                    case 'A': // Up
+                        if (hist_idx > 0) {
+                            if (hist_idx == (int)simple_history.size())
+                                saved_line = line;
+                            hist_idx--;
+                            line = simple_history[hist_idx];
+                            cursor = line.size();
+                            redraw();
+                        }
+                        break;
+                    case 'B': // Down
+                        if (hist_idx < (int)simple_history.size()) {
+                            hist_idx++;
+                            if (hist_idx == (int)simple_history.size())
+                                line = saved_line;
+                            else
+                                line = simple_history[hist_idx];
+                            cursor = line.size();
+                            redraw();
+                        }
+                        break;
+                    case 'C': // Right
+                        if (cursor < line.size()) { cursor++; redraw(); }
+                        break;
+                    case 'D': // Left
+                        if (cursor > 0) { cursor--; redraw(); }
+                        break;
+                    case 'H': // Home
+                        cursor = 0; redraw();
+                        break;
+                    case 'F': // End
+                        cursor = line.size(); redraw();
+                        break;
+                    default:
+                        break;
+                }
+            }
+            // Other ESC sequences silently ignored
+        } else if (ch == '\t') {
+            // Tab: ignore (no completion in simple mode)
+        } else if (ch >= 32) { // Printable character
+            line.insert(cursor, 1, ch);
+            cursor++;
+            redraw();
+        }
     }
+
+    tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+
     char* result = (char*)malloc(line.size() + 1);
-    if (result) {
-        strcpy(result, line.c_str());
-    }
+    if (result) strcpy(result, line.c_str());
     return result;
 }
+
 #define readline simple_readline
-#define add_history(x) ((void)0)
+#define add_history simple_add_history
 #define rl_bind_key(k, f) ((void)0)
 #define rl_variable_bind(k, v) ((void)0)
 #endif
