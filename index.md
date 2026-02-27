@@ -21,3 +21,5 @@ nav_order: 1
 11. [Contributing]({% link docs/contributing.md %})
 12. [License]({% link docs/license.md %})
 13. [Credits]({% link docs/credits.md %})
+14. [r2renef]({% link docs/r2renef.md %})
+15. [magisk-renef]({% link docs/magisk-renef.md %})
