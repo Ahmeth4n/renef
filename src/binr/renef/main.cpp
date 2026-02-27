@@ -14,6 +14,7 @@
 #include <renef/colors.h>
 #include <renef/server_connection.h>
 #include <renef/crypto.h>
+#include <renef/string_utils.h>
 #include "transport/uds.h"
 #include "transport/tcp.h"
 #ifndef RENEF_NO_READLINE
@@ -1114,7 +1115,8 @@ int main(int argc, char *argv[]) {
         if (lua_code.empty()) {
             std::cerr << "[ERROR] Cannot read file: " << script_file << "\n";
         } else {
-            std::string eval_cmd = "exec " + lua_code;
+            std::string hex = hex_encode(lua_code);
+            std::string eval_cmd = "hexexec " + hex;
             std::string response = send_command(eval_cmd);
 
             if (!response.empty()) {

@@ -46,6 +46,12 @@ Visit [renef.io](https://renef.io) for docs, guides, and API reference.
 
 Browse and share community hooks at **[hook.renef.io](https://hook.renef.io)** — SSL pinning bypass, root detection bypass, debugger detection bypass, and more.
 
+## Community Projects
+
+| Project | Description |
+|---------|-------------|
+| [magisk-renef](https://github.com/vichhka-git/magisk-renef) | Magisk/KernelSU/APatch module for auto-deploying renef on rooted devices |
+
 ## Community
 
 [![Telegram](https://img.shields.io/badge/Telegram-2CA5E0?style=flat-square&logo=telegram&logoColor=white)](https://t.me/+W5oJDYXg22FmMDA0)

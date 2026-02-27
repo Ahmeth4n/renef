@@ -90,28 +90,60 @@ char* get_loaded_libraries(void) {
     }
     result[0] = '\0';
 
+    char** seen_paths = NULL;
+    size_t seen_count = 0;
+    size_t seen_capacity = 0;
+
     char line[512];
     while (fgets(line, sizeof(line), fp)) {
-        // Match .so files at offset 0 (first segment) - can be r-xp or r--p
-        if (strstr(line, ".so") && strstr(line, " 00000000 ") &&
-            (strstr(line, "r-xp") || strstr(line, "r--p"))) {
-            size_t line_len = strlen(line);
+        if (!strstr(line, ".so")) continue;
+        if (!strstr(line, "r-xp") && !strstr(line, "r--p")) continue;
 
-            if (buf_used + line_len + 1 > buf_size) {
-                buf_size *= 2;
-                char* new_buf = (char*)realloc(result, buf_size);
-                if (!new_buf) {
-                    free(result);
-                    fclose(fp);
-                    return NULL;
-                }
-                result = new_buf;
-            }
-
-            strcat(result, line);
-            buf_used += line_len;
+        char addr[64], perms[8], offset[16], dev[16], inode[16], path[256];
+        path[0] = '\0';
+        if (sscanf(line, "%63s %7s %15s %15s %15s %255[^\n]",
+                   addr, perms, offset, dev, inode, path) < 6 || path[0] == '\0') {
+            continue;
         }
+
+        int already_seen = 0;
+        for (size_t i = 0; i < seen_count; i++) {
+            if (strcmp(seen_paths[i], path) == 0) {
+                already_seen = 1;
+                break;
+            }
+        }
+        if (already_seen) continue;
+
+        // Track this path
+        if (seen_count >= seen_capacity) {
+            seen_capacity = seen_capacity ? seen_capacity * 2 : 64;
+            char** new_seen = (char**)realloc(seen_paths, seen_capacity * sizeof(char*));
+            if (!new_seen) break;
+            seen_paths = new_seen;
+        }
+        seen_paths[seen_count++] = strdup(path);
+
+        size_t line_len = strlen(line);
+        if (buf_used + line_len + 1 > buf_size) {
+            buf_size *= 2;
+            char* new_buf = (char*)realloc(result, buf_size);
+            if (!new_buf) {
+                free(result);
+                result = NULL;
+                break;
+            }
+            result = new_buf;
+        }
+
+        strcat(result, line);
+        buf_used += line_len;
     }
+
+    for (size_t i = 0; i < seen_count; i++) {
+        free(seen_paths[i]);
+    }
+    free(seen_paths);
 
     fclose(fp);
     return result;

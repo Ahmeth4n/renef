@@ -71,10 +71,6 @@ MemorySearchResult memory_search(const unsigned char* pattern, size_t patternLen
     char buffer[512];
 
     while (fgets(buffer, sizeof(buffer), maps) && result.count < DEFAULT_MAX_RESULTS) {
-        if (strstr(buffer, "00000000") == NULL || strstr(buffer, ".so") == NULL) {
-            continue;
-        }
-
         char addr[64], perms[8], offset[16], dev[16], inode[16], path[256];
         path[0] = '\0';
 
@@ -85,6 +81,10 @@ MemorySearchResult memory_search(const unsigned char* pattern, size_t patternLen
         }
 
         if (perms[0] != 'r') {
+            continue;
+        }
+
+        if (strstr(path, "/dev/") || strstr(buffer, "[vdso]") || strstr(buffer, "[vvar]")) {
             continue;
         }
 
@@ -271,7 +271,7 @@ MemorySearchResult memory_search_pattern(const int* pattern, size_t patternLen) 
 
     char buffer[512];
     size_t totalBytesSearched = 0;
-    const size_t MAX_SEARCH_BYTES = 50 * 1024 * 1024;  // 50MB limit to prevent timeout
+    const size_t MAX_SEARCH_BYTES = 512 * 1024 * 1024;  // 512MB limit
 
     while (fgets(buffer, sizeof(buffer), maps) && result.count < DEFAULT_MAX_RESULTS) {
         if (totalBytesSearched > MAX_SEARCH_BYTES) {
@@ -279,14 +279,14 @@ MemorySearchResult memory_search_pattern(const int* pattern, size_t patternLen) 
             break;
         }
 
-        if (!strstr(buffer, ".so")) continue;
-
         char addr[64], perms[8], offset[16], dev[16], inode[16], path[256];
         path[0] = '\0';
 
         if (sscanf(buffer, "%63s %7s %15s %15s %15s %255[^\n]", addr, perms, offset, dev, inode, path) < 5)
             continue;
         if (perms[0] != 'r') continue;
+
+        if (strstr(path, "/dev/") || strstr(buffer, "[vdso]") || strstr(buffer, "[vvar]")) continue;
 
         char* dash = strchr(addr, '-');
         if (!dash) continue;

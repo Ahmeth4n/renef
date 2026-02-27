@@ -172,9 +172,43 @@ static int l_file_fdpath(lua_State *L) {
     return 1;
 }
 
+// File.write(path, addr, size) -> boolean
+// Dumps memory region to file
+static int l_file_write(lua_State *L) {
+    const char *path = luaL_checkstring(L, 1);
+    uintptr_t addr = (uintptr_t)luaL_checkinteger(L, 2);
+    size_t size = (size_t)luaL_checkinteger(L, 3);
+
+    if (size > 100 * 1024 * 1024) {  // 100MB limit
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, "size exceeds 100MB limit");
+        return 2;
+    }
+
+    FILE* f = fopen(path, "wb");
+    if (!f) {
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, "failed to open file for writing");
+        return 2;
+    }
+
+    size_t written = fwrite((const void*)addr, 1, size, f);
+    fclose(f);
+
+    if (written != size) {
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, "incomplete write");
+        return 2;
+    }
+
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
 static const luaL_Reg file_funcs[] = {
     {"readlink", l_file_readlink},
     {"read", l_file_read},
+    {"write", l_file_write},
     {"exists", l_file_exists},
     {"fdpath", l_file_fdpath},
     {NULL, NULL}
