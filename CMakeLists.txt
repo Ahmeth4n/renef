@@ -4,27 +4,73 @@ project(renef VERSION 0.3.3)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+include(FetchContent)
+
+# ---------------------------------------------------------------------------
 # Asio header-only library
+# Uses local copy if available (from `make setup-asio`), otherwise downloads.
+# ---------------------------------------------------------------------------
+set(ASIO_LOCAL_HEADER ${CMAKE_CURRENT_SOURCE_DIR}/external/asio/include/asio.hpp)
+
 add_library(asio INTERFACE)
-target_include_directories(asio INTERFACE
-    ${CMAKE_CURRENT_SOURCE_DIR}/external/asio/include
-)
+if(EXISTS ${ASIO_LOCAL_HEADER})
+    target_include_directories(asio INTERFACE
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/asio/include
+    )
+else()
+    message(STATUS "Local asio not found, downloading via FetchContent...")
+    FetchContent_Declare(asio
+        GIT_REPOSITORY https://github.com/chriskohlhoff/asio.git
+        GIT_TAG        asio-1-30-2
+        GIT_SHALLOW    TRUE
+    )
+    FetchContent_MakeAvailable(asio)
+    target_include_directories(asio INTERFACE ${asio_SOURCE_DIR}/asio/include)
+endif()
 target_compile_definitions(asio INTERFACE ASIO_STANDALONE)
 
+# ---------------------------------------------------------------------------
 # Capstone disassembler library
-add_library(capstone STATIC IMPORTED)
-set_target_properties(capstone PROPERTIES
-    IMPORTED_LOCATION ${CMAKE_CURRENT_SOURCE_DIR}/external/capstone/lib/libcapstone.a
-)
-target_include_directories(capstone INTERFACE
-    ${CMAKE_CURRENT_SOURCE_DIR}/external/capstone/include
-)
+# Uses pre-built .a if available (from `make setup-capstone-host`),
+# otherwise builds from source via FetchContent.
+# ---------------------------------------------------------------------------
+set(CAPSTONE_PREBUILT ${CMAKE_CURRENT_SOURCE_DIR}/external/capstone/lib/libcapstone.a)
+set(CAPSTONE_LOCAL_SRC ${CMAKE_CURRENT_SOURCE_DIR}/external/capstone/capstone-5.0.3)
+
+set(CAPSTONE_PREBUILT_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR}/external/capstone/include/capstone/capstone.h)
+
+if(EXISTS ${CAPSTONE_PREBUILT} AND EXISTS ${CAPSTONE_PREBUILT_INCLUDE})
+    # Use pre-built static library (from make setup-capstone-host)
+    add_library(capstone STATIC IMPORTED)
+    set_target_properties(capstone PROPERTIES
+        IMPORTED_LOCATION ${CAPSTONE_PREBUILT}
+    )
+    target_include_directories(capstone INTERFACE
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/capstone/include
+    )
+else()
+    message(STATUS "Pre-built capstone not found, building from source...")
+    set(CAPSTONE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(CAPSTONE_BUILD_CSTOOL OFF CACHE BOOL "" FORCE)
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+
+    # Use local source if available, otherwise download
+    if(EXISTS ${CAPSTONE_LOCAL_SRC}/CMakeLists.txt)
+        set(FETCHCONTENT_SOURCE_DIR_CAPSTONE ${CAPSTONE_LOCAL_SRC})
+    endif()
+
+    FetchContent_Declare(capstone
+        GIT_REPOSITORY https://github.com/capstone-engine/capstone.git
+        GIT_TAG        5.0.3
+        GIT_SHALLOW    TRUE
+    )
+    FetchContent_MakeAvailable(capstone)
+endif()
 
 # FTXUI TUI library (host-only)
 option(RENEF_BUILD_TUI "Build with FTXUI-based TUI support" ON)
 
 if(RENEF_BUILD_TUI)
-    include(FetchContent)
     FetchContent_Declare(
         ftxui
         GIT_REPOSITORY https://github.com/ArthurSonzogni/FTXUI
@@ -90,6 +136,9 @@ target_link_libraries(renef_core PUBLIC
     capstone
 )
 
+# Capstone AArch64 compat: ensures CS_ARCH_ARM64 is available in newer capstone versions
+target_compile_definitions(renef_core PUBLIC CAPSTONE_AARCH64_COMPAT_HEADER)
+
 # Shared library for Python/FFI bindings
 add_library(renef_shared SHARED
     src/librenef/binding/renef.cpp
@@ -109,6 +158,7 @@ target_include_directories(renef_shared PUBLIC
 )
 
 target_link_libraries(renef_shared PUBLIC capstone)
+target_compile_definitions(renef_shared PUBLIC CAPSTONE_AARCH64_COMPAT_HEADER)
 set_target_properties(renef_shared PROPERTIES
     OUTPUT_NAME "renef"
     VERSION 0.3.3

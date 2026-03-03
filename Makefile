@@ -187,6 +187,12 @@ debug:
 setup: setup-asio setup-lua setup-capstone-host build-capstone
 	@echo "All dependencies set up"
 
+# Client-only setup (no Android NDK required)
+setup-client: setup-asio setup-capstone-host
+	@echo ""
+	@echo "Client dependencies ready!"
+	@echo "Build: mkdir -p build && cd build && cmake .. && make"
+
 setup-asio: $(ASIO_HEADER)
 
 $(ASIO_HEADER):

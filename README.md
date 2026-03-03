@@ -38,13 +38,75 @@ make all
 make install
 ```
 
+### Client only (Windows)
+
+Requires [WSL](https://learn.microsoft.com/en-us/windows/wsl/install) with Ubuntu.
+
+```cmd
+git clone https://github.com/ahmeth4n/renef.git
+cd renef
+build_wsl.bat
+```
+
+This installs dependencies, configures, and builds automatically. Run the binary with `wsl ./build/renef`.
+
+#### Connecting to a device from WSL
+
+ADB runs on Windows, so set up the connection from PowerShell/cmd first:
+
+```cmd
+adb tcpip 5555
+adb connect <device-ip>:5555
+```
+
+Then use ADB from WSL via the Windows binary:
+
+```bash
+adb.exe push ...
+adb.exe shell ...
+```
+
+Once the renef server is running on the device, the client connects directly over TCP -no ADB needed:
+
+```bash
+wsl ./build/renef
+```
+
+### Client only (Linux / WSL)
+
+No Android NDK needed -only builds the host client. Dependencies (capstone, asio) are downloaded automatically during cmake configure.
+
+```bash
+# Install build tools (Ubuntu/Debian/WSL)
+sudo apt update
+sudo apt install -y build-essential cmake libreadline-dev git
+
+# Clone and build
+git clone https://github.com/ahmeth4n/renef.git
+cd renef
+mkdir -p build && cd build
+cmake ..
+make -j$(nproc)
+```
+
+### Client only (macOS)
+
+```bash
+brew install cmake readline
+git clone https://github.com/ahmeth4n/renef.git
+cd renef
+mkdir -p build && cd build
+cmake ..
+make -j$(sysctl -n hw.ncpu)
+```
+
 ## Learn more
 
 Visit [renef.io](https://renef.io) for docs, guides, and API reference.
 
 ## Hooks
 
-Browse and share community hooks at **[hook.renef.io](https://hook.renef.io)** — SSL pinning bypass, root detection bypass, debugger detection bypass, and more.
+Browse and share community hooks at **[hook.renef.io](https://hook.renef.io)** -SSL pinning bypass, root detection bypass, debugger detection bypass, and more.
 
 ## Community Projects
 
