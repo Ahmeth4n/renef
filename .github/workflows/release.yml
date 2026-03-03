@@ -302,23 +302,17 @@ jobs:
           Dynamic Instrumentation Toolkit for Android ARM64
 
           ### What's New
-            - **Agent Path Fix**: Fixed an issue where the agent file was being deleted by unlink() after injection, causing crashes and injection failures on subsequent runs. The payload path is now consistent across all injection stages. See [PR #13](https://github.com/Ahmeth4n/renef/pull/13) for details.
-            - **Java Hook `args.skip`**: Added `args.skip = true` support in `onEnter` callbacks to skip calling the original method entirely. Essential for void methods that throw exceptions (e.g., `checkServerTrusted`) and prevents ART stack walk crashes on Android 16 when multiple hooked methods are nested.
+            - **TUI Mode**: Full terminal UI powered by FTXUI with Console, Hooks, Memory, Modules and Logs tabs. Launch with \`renef -m v\`.
 
-            - **onEnter Arg Modification Fix**: Fixed a bug where modifying arguments in `onEnter` (e.g., `args[3] = value`) had no effect. The args table is now read back after the Lua callback, and changes are written to the saved registers.
+            - **Windows (WSL) Build Support**: One-command build on Windows via \`build_wsl.bat\`. CMake now auto-downloads dependencies (capstone, asio) via FetchContent when local copies are not present.
 
-            - **ExceptionClear for All Hooks**: `java_hook_call_original()` now unconditionally clears pending Java exceptions after calling the original method. Previously this only worked when an `onLeave` callback was registered.
+            - **Server Reconnection Fix**: Fixed reconnection issues when the server drops or the client needs to re-attach. TCP and UDS transports now handle stale connections properly.
 
-            - **Android 16 Conscrypt Support**: Added `([[BLjava/lang/String;)V` (byte[][]) signature variant for `ConscryptEngine.verifyCertificateChain`, which changed from long[] to byte[][] on Android 16.
+            - **Up Key Sequence Fix**: Fixed command history navigation in the CLI. Arrow key sequences are now parsed correctly.
 
-            - **Network Security Config Hooks**: Added `NetworkSecurityTrustManager` and `RootTrustManager` hooks with Socket/SSLEngine overloads for full Android Network Security Config bypass coverage.
+            - **File/Memory API Fixes**: Fixed file API and improved memory scan/read reliability. Process module enumeration is now more robust.
 
-            - **Java API Additions** (v0.3.1+):
-              - `Java.registerClass()` — Register Java classes at runtime with Lua-backed method implementations
-              - `Java.array()` — Create Java arrays from Lua tables
-              - `instance.raw` — Access raw ART `mirror::Object*` pointer from JavaInstance userdata
-
-            - **SSL Unpin Script**: Updated `scripts/examples/ssl_unpin.lua` with 30+ bypass targets including Conscrypt, OkHttp3, Squareup, Trustkit, Apache, Netty, Fabric, Appmattus, Cordova, WebView, Cronet, and more.
+            - **Native Hook Improvements**: Minor stability fixes for native ARM64 hooking.
           ${COMMITS}
 
           ### Downloads
