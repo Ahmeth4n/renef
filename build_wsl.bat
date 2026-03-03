@@ -32,7 +32,8 @@ if exist "%~dp0CMakeLists.txt" (
 )
 
 :: WSL inherits the working directory from cmd.exe
-:: All build logic lives in build.sh — no path conversion needed
+:: Fix CRLF line endings if git converted them on Windows
+wsl sed -i 's/\r$//' build.sh
 wsl bash build.sh
 set "RC=%errorlevel%"
 
