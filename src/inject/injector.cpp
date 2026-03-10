@@ -8,6 +8,7 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
+#include <signal.h>
 
 #define RENEF_PAYLOAD_PATH "/data/local/tmp/libagent.so"
 
@@ -544,6 +545,14 @@ bool inject(int pid, const char *so_path) {
     if (!write_memory(pid, timezone_addr, timezone_backup)) {
       std::cerr << "Warning: Failed to restore timezone\n";
     }
+
+    // Send SIGUSR2 to flush I-cache on main thread.
+    // On Android 9, /proc/pid/mem writes don't invalidate I-cache,
+    // so the main thread may still execute stale infinite loop from cache.
+    // The agent installs a SIGUSR2 handler that calls __builtin___clear_cache.
+    kill(pid, SIGUSR2);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
     std::cout << "  ✓ Original functions restored\n";
 
     std::cout << "\n Injection " << (dlopen_ok ? "complete" : "FAILED")

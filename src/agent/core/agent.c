@@ -595,6 +595,15 @@ static void* command_handler(void* arg) {
 
             route_command(client_fd, cmd, buf_used);
             free(cmd);
+
+            // Detach from JVM before blocking on read() to prevent
+            // ART thread suspension timeouts on Android 9.
+            // When attached, ART tries to suspend this thread for GC,
+            // but blocking read() with SA_RESTART ignores the signal.
+            if (g_jvm && g_current_jni_env) {
+                (*g_jvm)->DetachCurrentThread(g_jvm);
+                g_current_jni_env = NULL;
+            }
         }
 
         g_output_client_fd = -1;
@@ -606,9 +615,44 @@ static void* command_handler(void* arg) {
     return NULL;
 }
 
+// SIGUSR2 handler for I-cache flush on Android 9.
+// On Android 9, writing to /proc/pid/mem updates data cache but does NOT
+// invalidate the instruction cache. After the injector restores the original
+// malloc code over the infinite loop, the main thread keeps executing stale
+// instructions from I-cache/TB. The injector sends SIGUSR2 via tgkill() which
+// interrupts the main thread; this handler flushes I-cache so the CPU
+// re-fetches the restored code on return.
+#if defined(__aarch64__)
+static void* s_malloc_addr_for_icache = NULL;
+static struct sigaction s_prev_sigusr2;
+
+static void icache_flush_signal_handler(int sig) {
+    if (s_malloc_addr_for_icache) {
+        __builtin___clear_cache((char*)s_malloc_addr_for_icache,
+                                (char*)s_malloc_addr_for_icache + 512);
+        s_malloc_addr_for_icache = NULL;
+    }
+    // Restore previous handler
+    sigaction(SIGUSR2, &s_prev_sigusr2, NULL);
+}
+#endif
+
 __attribute__((constructor))
 void init(void) {
     signal(SIGPIPE, SIG_IGN);
+
+#if defined(__aarch64__)
+    if (get_device_api_level() <= 28) {
+        s_malloc_addr_for_icache = dlsym(RTLD_DEFAULT, "malloc");
+        if (s_malloc_addr_for_icache) {
+            struct sigaction sa;
+            memset(&sa, 0, sizeof(sa));
+            sa.sa_handler = icache_flush_signal_handler;
+            sigemptyset(&sa.sa_mask);
+            sigaction(SIGUSR2, &sa, &s_prev_sigusr2);
+        }
+    }
+#endif
 
     LOGI("========================================");
     LOGI("RENEF Agent Loaded");
