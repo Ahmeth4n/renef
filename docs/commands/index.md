@@ -17,5 +17,5 @@ This section covers all available commands in the Renef CLI.
 - [Memory Operations]({% link docs/commands/memory.md %}) - ms, msi, md
 - [Hook Management]({% link docs/commands/hooks.md %}) - hooks, unhook, hookgen
 - [Real-time Monitoring]({% link docs/commands/monitoring.md %}) - watch
-- [Syscall Tracing]({% link docs/commands/strace.md %}) - renef-strace
+- [Syscall Tracing]({% link docs/renef-strace.md %}) - renef-strace
 - [Utility Commands]({% link docs/commands/utility.md %}) - help, q, clear, color
