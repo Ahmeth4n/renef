@@ -274,7 +274,7 @@ int TuiApp::run() {
         return false;
     });
 
-    state_->append_console_output("renef v0.3.4");
+    state_->append_console_output("renef v0.3.5");
     state_->append_console_output("Type 'help' for commands.");
     state_->append_console_output("");
 
