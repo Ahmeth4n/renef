@@ -14,4 +14,5 @@ Practical examples for common use cases:
 - [Crypto Key Logger]({% link docs/examples/crypto-logger.md %})
 - [Function Call Tracer]({% link docs/examples/tracer.md %})
 - [Interactive Memory Search]({% link docs/examples/memory-search.md %})
+- [Syscall Tracer]({% link docs/examples/strace.md %})
 - [CTF - DereLabs 0x9]({% link docs/examples/ctf-derelabs.md %})

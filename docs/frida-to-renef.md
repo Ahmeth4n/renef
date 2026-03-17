@@ -390,26 +390,41 @@ Memory.patch(addr, "\x1f\x20\x03\xd5")  -- ARM64 NOP
 
 ---
 
-### Thread / NativeFunction
+### Thread
 
-| Frida (JS) | Renef (Lua) |
-|-------------|-------------|
-| `new NativeFunction(addr, 'int', ['int'])(42)` | `Thread.call(addr, 42)` |
+| Frida (JS) | Renef (Lua) | Notes |
+|-------------|-------------|-------|
+| `Thread.backtrace(this.context, Backtracer.ACCURATE)` | `Thread.backtrace()` | Auto-detects hook context |
+| `Process.getCurrentThreadId()` | `Thread.id()` | Returns `gettid()` |
+
+**Stack trace in hooks:**
 
 ```javascript
 // Frida
-var malloc = new NativeFunction(
-    Module.findExportByName("libc.so", "malloc"),
-    'pointer', ['size_t']
-);
-var buf = malloc(0x100);
+Interceptor.attach(addr, {
+    onEnter: function(args) {
+        console.log(Thread.backtrace(this.context, Backtracer.ACCURATE)
+            .map(DebugSymbol.fromAddress).join('\n'));
+    }
+});
 ```
 
 ```lua
--- Renef
-local malloc_addr = Module.find("libc.so") + malloc_offset
-local buf = Thread.call(malloc_addr, 0x100)
+-- Renef (hook context auto-detected)
+hook("libc.so", offset, {
+    onEnter = function(args)
+        local bt = Thread.backtrace()
+        for _, f in ipairs(bt) do
+            local mod = f.module or string.format("0x%x", f.pc)
+            local sym = f.symbol or string.format("+0x%x", f.offset or 0)
+            print(string.format("  %s  %s", mod, sym))
+        end
+    end
+})
 ```
+
+{: .note }
+> In Frida, you must pass `this.context` to get the caller's backtrace. In Renef, `Thread.backtrace()` automatically uses the caller's frame pointer when called from a hook callback — no arguments needed.
 
 ---
 

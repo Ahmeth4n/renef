@@ -190,18 +190,17 @@ Register a new Java class at runtime that implements one or more interfaces. Met
 
 ```lua
 local EmptyTrustManager = Java.registerClass({
-    name = "com.renef.EmptyTrustManager",
     implements = {
         "javax/net/ssl/X509TrustManager"
     },
     methods = {
-        checkClientTrusted = function(self, args)
+        checkClientTrusted = function(certs, authType)
             -- Do nothing (accept all)
         end,
-        checkServerTrusted = function(self, args)
+        checkServerTrusted = function(certs, authType)
             -- Do nothing (accept all)
         end,
-        getAcceptedIssuers = function(self, args)
+        getAcceptedIssuers = function()
             return nil
         end
     }
@@ -210,9 +209,10 @@ local EmptyTrustManager = Java.registerClass({
 
 **Parameters:**
 - `definition` - Table with:
-  - `name` - Fully qualified class name with `.` separators
   - `implements` - Array of interface names with `/` separators
   - `methods` - Table mapping method names to Lua callback functions
+
+Method callbacks receive the Java method arguments directly as individual Lua parameters (strings are converted automatically, other objects are passed as raw integer pointers).
 
 **Returns:** `JavaInstance` userdata of the registered class
 
@@ -229,14 +229,11 @@ Create a Java array from Lua values. Returns a `JavaInstance` userdata holding a
 -- Array of TrustManagers
 local tm = EmptyTrustManager
 local tm_array = Java.array("javax/net/ssl/TrustManager", { tm })
-
--- Array of strings
-local str_array = Java.array("java/lang/String", { "hello", "world" })
 ```
 
 **Parameters:**
 - `type` - Element type as class name with `/` separators
-- `elements` - Lua table (array) of elements. Supports `string`, `JavaInstance`, and `nil`.
+- `elements` - Lua table (array) of `JavaInstance` userdata elements. Non-userdata entries are set as `null` in the array.
 
 **Returns:** `JavaInstance` userdata wrapping the `jobjectArray`
 

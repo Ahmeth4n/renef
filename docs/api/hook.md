@@ -33,15 +33,56 @@ hook("libc.so", 0x12340, {
 **Parameters:**
 - `library` - Library name (e.g., "libc.so")
 - `offset` - Offset from library base (hex number)
-- `callbacks` - Table with `onEnter` and/or `onLeave` functions
+- `callbacks` - Table with `onEnter` and/or `onLeave` functions, and optional `caller` field
+
+**Callbacks table fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `onEnter` | function | Called before the original function |
+| `onLeave` | function | Called after the original function returns |
+| `caller` | string or table | Filter: only hook calls from this library (enables PLT/GOT hooking) |
+
+```lua
+-- Hook only calls to malloc from libnative.so (PLT/GOT mode)
+hook("libc.so", malloc_offset, {
+    caller = "libnative.so",
+    onEnter = function(args)
+        print(string.format("malloc(0x%x) from libnative.so", args[0]))
+    end
+})
+
+-- Hook calls from multiple libraries
+hook("libc.so", open_offset, {
+    caller = {"libnative.so", "libutils.so"},
+    onEnter = function(args) ... end
+})
+```
+
+{: .note }
+> Without `caller`, a **trampoline hook** is used (patches the target function directly). With `caller`, a **PLT/GOT hook** is used (patches the caller's GOT entries only).
 
 **onEnter arguments:**
-- `args` - Table with function arguments (args[0], args[1], ...)
+- `args` - Table with function arguments (args[0], args[1], ... args[7] for x0-x7)
 - Arguments can be modified by assignment
 
 **onLeave arguments:**
-- `retval` - Return value from function
+- `retval` - Return value from function (x0 register)
 - Return a value to replace the original return value
+
+### Stack Trace in Hooks
+
+Use `Thread.backtrace()` inside hook callbacks to see who called the hooked function:
+
+```lua
+hook("libc.so", fopen_offset, {
+    onEnter = function(args)
+        local path = Memory.readString(args[0])
+        print("fopen(" .. tostring(path) .. ")")
+        print(Thread.backtrace())
+    end
+})
+```
 
 ---
 
@@ -59,12 +100,15 @@ Hook a Java method via JNI.
 hook("com/example/MainActivity", "getSecret", "(Ljava/lang/String;)Ljava/lang/String;", {
     onEnter = function(args)
         print("[+] MainActivity.getSecret() called")
-        print(string.format("    this: 0x%x", args[0]))
-        print(string.format("    param1: 0x%x", args[1]))
+        print(string.format("    this: 0x%x", args[1]))
+        print(string.format("    param1: 0x%x", args[2]))
     end,
     onLeave = function(retval)
-        print(string.format("[*] Original return: 0x%x", retval))
-        
+        print(string.format("[*] Original return: 0x%x", retval.raw))
+        if retval.value then
+            print("    String value: " .. retval.value)
+        end
+
         -- Create and return a new string
         local newStr = Jni.newStringUTF("Modified!")
         return newStr
@@ -78,17 +122,27 @@ hook("com/example/MainActivity", "getSecret", "(Ljava/lang/String;)Ljava/lang/St
 - `signature` - JNI signature (e.g., "(Ljava/lang/String;)Ljava/lang/String;")
 - `callbacks` - Table with `onEnter` and/or `onLeave` functions
 
-**Java hook arguments (`onEnter`):**
-- `args[0]` - ArtMethod pointer (internal, not useful to scripts)
-- `args[1]` - `this` pointer (instance methods) or first parameter (static methods)
-- `args[2..n]` - Method parameters as raw pointers
-- `args.class` - Class name (string)
-- `args.method` - Method name (string)
-- `args.signature` - JNI signature (string)
-- `args.isStatic` - Whether method is static (boolean)
-- `args.skip` - Set to `true` to skip calling the original method entirely
+**Java hook `onEnter` — `args` table:**
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `args[0]` | integer | ArtMethod pointer (internal, not useful to scripts) |
+| `args[1]` | integer | `this` pointer (instance methods) or first parameter (static methods) |
+| `args[2..7]` | integer | Method parameters as raw pointers |
+| `args.class` | string | Class name |
+| `args.method` | string | Method name |
+| `args.signature` | string | JNI signature |
+| `args.isStatic` | boolean | Whether method is static |
+| `args.skip` | boolean | Set to `true` to skip calling the original method entirely |
 
 Arguments are modifiable: `args[2] = newValue` will change the parameter passed to the original method.
+
+**Java hook `onLeave` — `retval` table:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `retval.raw` | integer | Raw return value (x0 register) |
+| `retval.value` | string or nil | Decoded string content (only for methods returning `String`) |
 
 **`args.skip` — Skip Original Method:**
 
@@ -111,10 +165,10 @@ hook("javax/net/ssl/X509TrustManager", "checkServerTrusted",
 | Return from onLeave | Effect |
 |---|---|
 | `nil` (or no return) | Original return value unchanged |
-| integer | Sets x0 register directly |
-| boolean (`true`/`false`) | Sets x0 to 1 or 0 |
+| integer | Sets x0 register directly (e.g., `return 1` for true, `return 0` for false) |
 | `{__jni_type="string", value="..."}` | Creates a new Java String and returns it |
 | `{__jni_type="int", value=N}` | Sets x0 to N |
+| `{__jni_type="boolean", value=true}` | Sets x0 to 1 or 0 |
 | `Jni.newStringUTF("...")` | Returns raw pointer to new Java String |
 
 ```lua
