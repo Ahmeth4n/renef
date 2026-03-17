@@ -47,6 +47,7 @@ adb shell /data/local/tmp/renef_server
 | `make client` | Build only the PC client |
 | `make server` | Build only the Android server |
 | `make payload` | Build only the agent payload |
+| `make renef-strace` | Build the standalone syscall tracer binary |
 | `make deploy` | Build and push to device |
 | `make install` | Deploy + setup port forwarding |
 | `make clean` | Remove build artifacts |

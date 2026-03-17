@@ -86,7 +86,14 @@ Active traces: 0
 
 ## Standalone Binary
 
-`renef-strace` is also available as a standalone executable for use outside the renef shell:
+`renef-strace` is also available as a standalone executable for use outside the renef shell.
+
+**Build:**
+```bash
+make renef-strace
+```
+
+The binary will be at `build/renef-strace`.
 
 ```bash
 # Trace syscalls on a running process
