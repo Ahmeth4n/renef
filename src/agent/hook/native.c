@@ -1,6 +1,7 @@
 #include <agent/hook.h>
 #include <agent/globals.h>
 #include <agent/proc.h>
+#include <agent/lua_thread.h>
 
 #include <string.h>
 #include <errno.h>
@@ -607,6 +608,9 @@ void hook_logger(uint64_t* saved_regs) {
 
     verbose_log("  [DEBUG] g_lua_engine=%p, hook_index=%d", g_lua_engine, g_current_hook_index);
 
+    g_hook_caller_fp = saved_regs[36];
+    g_hook_caller_lr = saved_regs[37];
+
     if (g_current_hook_index >= 0 && g_lua_engine) {
         HookInfo* hook = &g_hooks[g_current_hook_index];
         verbose_log("  [DEBUG] onEnter_ref=%d (NOREF=%d)", hook->lua_onEnter_ref, LUA_NOREF);
@@ -659,11 +663,20 @@ void hook_logger(uint64_t* saved_regs) {
     } else {
         verbose_log("  [DEBUG] Skipped: engine=%p, index=%d", g_lua_engine, g_current_hook_index);
     }
+
+    g_hook_caller_fp = 0;
+    g_hook_caller_lr = 0;
 }
 
 uint64_t log_return_value(uint64_t ret_val) {
     verbose_log("=== HOOK: Function Returned ===");
     verbose_log("  x0 (return): 0x%llx (%lld)", (unsigned long long)ret_val, (long long)ret_val);
+
+    uintptr_t my_fp;
+    __asm__ volatile("mov %0, x29" : "=r"(my_fp));
+    uintptr_t handler_fp = *(uintptr_t*)my_fp;
+    g_hook_caller_fp = *(uintptr_t*)handler_fp;
+    g_hook_caller_lr = *(uintptr_t*)(handler_fp + 8);
 
     if (g_current_hook_index >= 0 && g_lua_engine) {
         HookInfo* hook = &g_hooks[g_current_hook_index];
@@ -715,6 +728,9 @@ uint64_t log_return_value(uint64_t ret_val) {
             pthread_mutex_unlock(&g_lua_mutex);
         }
     }
+
+    g_hook_caller_fp = 0;
+    g_hook_caller_lr = 0;
     return ret_val;
 }
 

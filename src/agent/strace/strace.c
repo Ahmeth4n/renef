@@ -1,6 +1,7 @@
 #include <agent/strace.h>
 #include <agent/globals.h>
 #include <agent/proc.h>
+#include <agent/lua_thread.h>
 
 #include <string.h>
 #include <stdio.h>
@@ -227,6 +228,9 @@ void strace_on_enter(uint64_t* saved_regs) {
     if (g_strace_depth > 0) return;
     g_strace_depth++;
 
+    g_hook_caller_fp = saved_regs[36];
+    g_hook_caller_lr = saved_regs[37];
+
     int idx = g_strace_current_index;
     if (idx < 0 || idx >= g_strace_count) {
         g_strace_depth--;
@@ -301,12 +305,20 @@ void strace_on_enter(uint64_t* saved_regs) {
 
     verbose_log("STRACE: %s", output);
 
+    g_hook_caller_fp = 0;
+    g_hook_caller_lr = 0;
     g_strace_depth--;
 }
 
 uint64_t strace_on_return(uint64_t ret_val) {
     if (g_strace_depth > 0) return ret_val;
     g_strace_depth++;
+
+    uintptr_t my_fp;
+    __asm__ volatile("mov %0, x29" : "=r"(my_fp));
+    uintptr_t handler_fp = *(uintptr_t*)my_fp;
+    g_hook_caller_fp = *(uintptr_t*)handler_fp;
+    g_hook_caller_lr = *(uintptr_t*)(handler_fp + 8);
 
     int idx = g_strace_current_index;
     if (idx < 0 || idx >= g_strace_count) {
@@ -364,6 +376,8 @@ uint64_t strace_on_return(uint64_t ret_val) {
     verbose_log("STRACE: %s() = %lld", entry->def->name, (long long)ret_val);
     (void)tid;
 
+    g_hook_caller_fp = 0;
+    g_hook_caller_lr = 0;
     g_strace_depth--;
     return ret_val;
 }
