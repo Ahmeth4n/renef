@@ -31,6 +31,8 @@
 #include <agent/globals.h>
 #include <agent/cmd_registry.h>
 #include <agent/hook.h>
+#include <agent/hook_java.h>
+#include <agent/strace.h>
 #include <agent/proc.h>
 #include <agent/handlers.h>
 #include <sys/system_properties.h>
@@ -606,11 +608,23 @@ static void* command_handler(void* arg) {
             }
         }
 
+        {
+            int native_count = uninstall_all_hooks();
+            if (native_count > 0)
+                LOGI("Cleaned up %d native hook(s)", native_count);
+
+            int java_count = uninstall_all_java_hooks();
+            if (java_count > 0)
+                LOGI("Cleaned up %d Java hook(s)", java_count);
+
+            strace_remove_all();
+        }
+
         g_output_client_fd = -1;
         close(client_fd);
         is_agent_established = false;
         memset(session_key, 0, sizeof(session_key));
-        LOGI("Connection closed, session reset");
+        LOGI("Connection closed, all hooks restored, session reset");
     }
 
     close(server_fd);
