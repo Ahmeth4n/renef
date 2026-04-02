@@ -908,6 +908,7 @@ int main(int argc, char *argv[]) {
     std::string attach_pid;
     std::string spawn_app;
     bool view_mode = false;
+    bool watch_mode = false;
 
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
@@ -940,6 +941,9 @@ int main(int argc, char *argv[]) {
                 view_mode = true;
             }
         }
+        else if (arg == "-w" || arg == "--watch") {
+            watch_mode = true;
+        }
         else if (arg == "-v" || arg == "--verbose") {
             g_verbose_mode = true;
         }
@@ -954,10 +958,11 @@ int main(int argc, char *argv[]) {
             std::cout << "  --hook <type>            Hook type: trampoline (default) or pltgot\n";
             std::cout << "  --local                  Local mode: connect via UDS (for Termux/on-device)\n";
             std::cout << "  -m, --mode <mode>        Interface mode: v/view (TUI) [default: CLI]\n";
+            std::cout << "  -w, --watch              Auto-watch hook output after loading script\n";
             std::cout << "  -v, --verbose            Enable verbose mode (show agent debug logs)\n";
             std::cout << "  -h, --help               Show this help\n";
             std::cout << "\nExamples:\n";
-            std::cout << "  " << argv[0] << " -s com.example.app -l script.lua\n";
+            std::cout << "  " << argv[0] << " -s com.example.app -l script.lua -w\n";
             std::cout << "  " << argv[0] << " -s com.example.app --hook pltgot\n";
             std::cout << "  " << argv[0] << " -a 1234 --hook=pltgot -l hook.lua\n";
             std::cout << "  " << argv[0] << " --local -s com.example.app    # On-device usage\n";
@@ -1056,7 +1061,7 @@ int main(int argc, char *argv[]) {
 
     global_commands = registry.get_all_commands_with_descriptions();
 
-    bool auto_started = false;
+    bool auto_started = g_gadget_mode;  // Gadget mode: agent already running
     if (!attach_pid.empty() || !spawn_app.empty()) {
         // Ensure device is connected for CLI spawn/attach
         if (!g_device_ready) {
@@ -1133,6 +1138,11 @@ int main(int argc, char *argv[]) {
             if (!response.empty()) {
             }
             std::cout << "[*] Script loaded\n";
+
+            if (watch_mode) {
+                std::cout << "\n[Auto-watch enabled - Press 'q' to exit]\n";
+                send_command("watch");
+            }
         }
     }
 

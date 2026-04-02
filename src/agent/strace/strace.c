@@ -68,6 +68,7 @@ int g_strace_count = 0;
 static __thread int g_strace_current_index = -1;
 static __thread int g_strace_depth = 0;
 static __thread char g_strace_enter_buf[1024];
+static __thread uint64_t g_strace_skip_retval = 0;
 
 static pthread_mutex_t g_strace_lua_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -224,8 +225,11 @@ void strace_set_current_index(int index) {
     g_strace_current_index = index;
 }
 
-void strace_on_enter(uint64_t* saved_regs) {
-    if (g_strace_depth > 0) return;
+int strace_on_enter(uint64_t* saved_regs) {
+    int skip = 0;
+    g_strace_skip_retval = 0;
+
+    if (g_strace_depth > 0) return 0;
     g_strace_depth++;
 
     g_hook_caller_fp = saved_regs[36];
@@ -234,13 +238,13 @@ void strace_on_enter(uint64_t* saved_regs) {
     int idx = g_strace_current_index;
     if (idx < 0 || idx >= g_strace_count) {
         g_strace_depth--;
-        return;
+        return 0;
     }
 
     StraceEntry* entry = &g_strace_hooks[idx];
     if (!entry->active || !entry->def) {
         g_strace_depth--;
-        return;
+        return 0;
     }
 
     pid_t tid = (pid_t)syscall(SYS_gettid);
@@ -276,7 +280,10 @@ void strace_on_enter(uint64_t* saved_regs) {
         pthread_mutex_lock(&g_strace_lua_mutex);
         lua_State* L = lua_engine_get_state(g_lua_engine);
         if (L) {
+            /* push callback */
             lua_rawgeti(L, LUA_REGISTRYINDEX, entry->lua_onCall_ref);
+
+            /* build info table */
             lua_newtable(L);
 
             lua_pushstring(L, def->name);
@@ -295,10 +302,50 @@ void strace_on_enter(uint64_t* saved_regs) {
             }
             lua_setfield(L, -2, "args");
 
+            /* save ref to info table so we can read back after pcall */
+            lua_pushvalue(L, -1);
+            int info_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+
+            /* pcall: callback(info) -> 0 results */
             if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
                 LOGE("strace onCall callback failed: %s", lua_tostring(L, -1));
                 lua_pop(L, 1);
+            } else {
+                /* read back modified args from info table */
+                lua_rawgeti(L, LUA_REGISTRYINDEX, info_ref);
+
+                lua_getfield(L, -1, "args");
+                if (lua_istable(L, -1)) {
+                    for (int i = 0; i < def->nr_args && i < STRACE_MAX_ARGS; i++) {
+                        lua_rawgeti(L, -1, i + 1);
+                        if (lua_isinteger(L, -1)) {
+                            saved_regs[i] = (uint64_t)lua_tointeger(L, -1);
+                        }
+                        lua_pop(L, 1);
+                    }
+                }
+                lua_pop(L, 1); /* pop args table */
+
+                /* check skip flag */
+                lua_getfield(L, -1, "skip");
+                if (lua_toboolean(L, -1)) {
+                    skip = 1;
+                }
+                lua_pop(L, 1); /* pop skip */
+
+                /* read retval for skip mode */
+                if (skip) {
+                    lua_getfield(L, -1, "retval");
+                    if (lua_isinteger(L, -1)) {
+                        g_strace_skip_retval = (uint64_t)lua_tointeger(L, -1);
+                    }
+                    lua_pop(L, 1); /* pop retval */
+                }
+
+                lua_pop(L, 1); /* pop info table */
             }
+
+            luaL_unref(L, LUA_REGISTRYINDEX, info_ref);
         }
         pthread_mutex_unlock(&g_strace_lua_mutex);
     }
@@ -308,6 +355,7 @@ void strace_on_enter(uint64_t* saved_regs) {
     g_hook_caller_fp = 0;
     g_hook_caller_lr = 0;
     g_strace_depth--;
+    return skip;
 }
 
 uint64_t strace_on_return(uint64_t ret_val) {
@@ -353,8 +401,14 @@ uint64_t strace_on_return(uint64_t ret_val) {
                 lua_setfield(L, -2, "errno_str");
             }
 
-            if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+            if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
                 LOGE("strace onReturn callback failed: %s", lua_tostring(L, -1));
+                lua_pop(L, 1);
+            } else {
+                /* callback return value overrides retval: integer or nil (no change) */
+                if (lua_isinteger(L, -1)) {
+                    ret_val = (uint64_t)lua_tointeger(L, -1);
+                }
                 lua_pop(L, 1);
             }
         }
@@ -393,6 +447,10 @@ void* strace_get_original(void) {
     return NULL;
 }
 
+uint64_t strace_get_skip_retval(void) {
+    return g_strace_skip_retval;
+}
+
 __attribute__((naked)) void strace_hook_handler(void) {
     __asm__ __volatile__(
         "stp x29, x30, [sp, #-16]!\n"
@@ -420,9 +478,12 @@ __attribute__((naked)) void strace_hook_handler(void) {
         "ldr x0, [sp, #256]\n"
         "bl strace_set_current_index\n"
 
+        /* strace_on_enter returns 0 (normal) or 1 (skip original) */
         "mov x0, sp\n"
         "bl strace_on_enter\n"
+        "cbnz x0, 1f\n"
 
+        /* normal path: call original with (possibly mutated) args */
         "bl strace_get_original\n"
         "str x0, [sp, #264]\n"
 
@@ -434,7 +495,14 @@ __attribute__((naked)) void strace_hook_handler(void) {
 
         "ldr x16, [sp, #264]\n"
         "blr x16\n"
+        "b 2f\n"
 
+        /* skip path: use fake return value instead of calling original */
+        "1:\n"
+        "bl strace_get_skip_retval\n"
+
+        /* common: on_return can still override the return value */
+        "2:\n"
         "bl strace_on_return\n"
 
         "add sp, sp, #288\n"
