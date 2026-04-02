@@ -29,7 +29,7 @@ local cov = KCov.open(65536)      -- 64K entries (512KB RAM)
 **Returns:** KCov userdata object with methods below.
 
 {: .note }
-> The buffer is shared with the kernel via mmap — zero-copy, no overhead. Lua GC will automatically clean up if you forget to call `close()`.
+> The buffer is shared with the kernel via mmap -zero-copy, no overhead. Lua GC will automatically clean up if you forget to call `close()`.
 
 ---
 
@@ -67,7 +67,7 @@ local hits = cov:count()
 print(string.format("Kernel functions hit: %d", hits))
 ```
 
-**Returns:** Integer — number of PC entries recorded.
+**Returns:** Integer -number of PC entries recorded.
 
 ---
 
@@ -87,7 +87,7 @@ end
 **Parameters:**
 - `max` (optional) - Maximum entries to read (default: 8192)
 
-**Returns:** Table of integers `{0xffffffc0103a5e20, 0xffffffc0103a5e48, ...}` — each is a kernel function address.
+**Returns:** Table of integers `{0xffffffc0103a5e20, 0xffffffc0103a5e48, ...}` -each is a kernel function address.
 
 {: .tip }
 > Resolve addresses to function names with `/proc/kallsyms`: `adb shell "cat /proc/kallsyms | grep ffffffc0103a5e20"`
@@ -109,7 +109,7 @@ cov:disable()
 
 ## `cov:edges()`
 
-Generate unique edge hashes from consecutive PC pairs. This is the core of coverage-guided fuzzing — AFL-style edge coverage.
+Generate unique edge hashes from consecutive PC pairs. This is the core of coverage-guided fuzzing -AFL-style edge coverage.
 
 ```lua
 cov:reset()
@@ -128,7 +128,7 @@ print(string.format("Unique edges: %d", count))
 
 **How it works:**
 - For each consecutive PC pair `(pc[i], pc[i+1])`, computes `hash = (pc[i] >> 1) XOR pc[i+1]`
-- Uses 20-bit hash (1M slots) — same approach as AFL
+- Uses 20-bit hash (1M slots) -same approach as AFL
 - Same function called from different paths produces different edges
 
 ---
@@ -158,7 +158,7 @@ end
 **Parameters:**
 - `old_edges` - Edge table from a previous `cov:edges()` call
 
-**Returns:** Integer — number of edges in the current measurement that don't exist in `old_edges`.
+**Returns:** Integer -number of edges in the current measurement that don't exist in `old_edges`.
 
 ---
 
@@ -223,11 +223,11 @@ cov:close()
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `KCov.open([size])` | userdata | Open KCOV device, create shared buffer |
-| `cov:enable()` | — | Start recording for this thread |
-| `cov:disable()` | — | Stop recording |
+| `cov:enable()` | -| Start recording for this thread |
+| `cov:disable()` | -| Stop recording |
 | `cov:count()` | integer | Number of kernel function hits (fast) |
 | `cov:collect([max])` | table | Read PC addresses as Lua table |
-| `cov:reset()` | — | Clear buffer for new measurement |
+| `cov:reset()` | -| Clear buffer for new measurement |
 | `cov:edges()` | table | Generate AFL-style edge hashes |
 | `cov:diff(old)` | integer | Count new edges vs previous run |
-| `cov:close()` | — | Cleanup (also called by GC) |
+| `cov:close()` | -| Cleanup (also called by GC) |

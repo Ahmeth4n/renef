@@ -126,7 +126,7 @@ print(hexdump(long_string, 32))  -- only first 32 bytes
   - **table** - Byte array `{0x41, 0x42, ...}`
 - `length` (optional) - Number of bytes to dump (default: 256, max: 64KB)
 
-**Returns:** Formatted string (does not print automatically — use `print()`)
+**Returns:** Formatted string (does not print automatically -use `print()`)
 
 **Output format:**
 ```
