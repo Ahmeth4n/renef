@@ -85,6 +85,66 @@ Memory.dump(r)
 
 ---
 
+## Hexdump
+
+### `hexdump(target [, length])`
+
+Frida-style hexdump. Works with any variable type. Also available as `Memory.hexdump()`.
+
+```lua
+-- Memory address + length
+print(hexdump(0x7f000000, 128))
+
+-- Binary string data
+local data = Memory.read(addr, 256)
+print(hexdump(data))
+
+-- Hook argument (register value = address)
+hook("libc.so", open_offset, {
+    onEnter = function(args)
+        print(hexdump(args[1], 64))  -- dump path string memory
+    end
+})
+
+-- Java raw pointer
+local obj = Java.use("android/app/ActivityThread")
+    :call("currentApplication", "()Landroid/app/Application;")
+print(hexdump(obj.raw, 128))
+
+-- Byte table
+print(hexdump({0x52, 0x45, 0x4e, 0x45, 0x46}))
+
+-- With length limit on string
+print(hexdump(long_string, 32))  -- only first 32 bytes
+```
+
+**Parameters:**
+- `target` - Data to hexdump. Accepted types:
+  - **integer** - Memory address (reads `length` bytes from this address)
+  - **string** - Binary data (dumps the string contents)
+  - **userdata** - Dereferences inner pointer (e.g. Java `instance.raw`)
+  - **table** - Byte array `{0x41, 0x42, ...}`
+- `length` (optional) - Number of bytes to dump (default: 256, max: 64KB)
+
+**Returns:** Formatted string (does not print automatically — use `print()`)
+
+**Output format:**
+```
+           0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F  0123456789ABCDEF
+7f000000  48 65 6c 6c 6f 20 57 6f  72 6c 64 00 00 00 00 00  Hello World.....
+7f000010  01 02 03 ff fe fd 00 00  00 00 00 00 00 00 00 00  ................
+```
+
+### `Memory.hexdump(target [, length])`
+
+Alias for global `hexdump()`.
+
+```lua
+print(Memory.hexdump(addr, 64))
+```
+
+---
+
 ## Read Functions
 
 ### `Memory.read(address, size)`

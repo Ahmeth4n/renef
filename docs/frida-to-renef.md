@@ -326,6 +326,7 @@ local tm_array = Java.array("javax/net/ssl/TrustManager", { emptyTm })
 | `ptr(addr).writeU64(val)` | `Memory.writeU64(addr, val)` | |
 | `ptr(addr).writeByteArray(bytes)` | `Memory.write(addr, bytes)` | |
 | `Memory.patchCode(addr, size, fn)` | `Memory.patch(addr, bytes)` | Auto-handles `mprotect` |
+| `hexdump(target, options)` | `hexdump(target [, length])` | Global function, also `Memory.hexdump()` |
 
 **Memory scan:**
 
@@ -353,6 +354,25 @@ local results = Memory.search("DE AD BE EF", "libtarget.so")
 
 {: .note }
 > Renef's `Memory.search` supports `??` wildcards: `Memory.search("FD 7B ?? A9")` matches any ARM64 function prologue.
+
+**Hexdump:**
+
+```javascript
+// Frida
+console.log(hexdump(ptr(addr), { length: 64, ansi: true }));
+console.log(hexdump(byteArray));
+```
+
+```lua
+-- Renef
+print(hexdump(addr, 64))          -- address + length
+print(hexdump(binary_string))     -- string data
+print(hexdump(args[1], 64))       -- hook arg
+print(hexdump({0x41, 0x42}))      -- byte table
+```
+
+{: .note }
+> Renef's `hexdump()` accepts integers (addresses), strings, userdata (Java `.raw` pointers), and byte tables. It returns a string — use `print()` to display.
 
 **Read and write memory:**
 

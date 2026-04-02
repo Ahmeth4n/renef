@@ -83,6 +83,76 @@ Syscall.trace("openat", {
 | `retval` | integer | Return value |
 | `errno_str` | string | Error description (only when retval < 0) |
 
+### Argument Mutation
+
+Modify syscall arguments before execution by writing to `info.args`:
+
+```lua
+Syscall.trace("ioctl", {
+    onCall = function(info)
+        local orig_cmd = info.args[2]
+        info.args[2] = 0x1234  -- replace ioctl command
+        print(string.format("ioctl cmd 0x%x -> 0x1234", orig_cmd))
+    end
+})
+```
+
+### Skip Original Syscall
+
+Prevent the original syscall from executing by setting `info.skip = true`. You can also set a fake return value:
+
+```lua
+Syscall.trace("access", {
+    onCall = function(info)
+        info.skip = true    -- don't execute the real syscall
+        info.retval = 0     -- fake success return value
+        print("access() skipped, returning 0")
+    end
+})
+```
+
+{: .note }
+> When `skip = true`, the syscall never reaches the kernel. The `onReturn` callback still fires with the fake `retval`.
+
+### Return Value Override
+
+Override the return value from `onReturn` by returning a value:
+
+```lua
+Syscall.trace("access", {
+    onReturn = function(info)
+        if info.retval < 0 then
+            print("access() failed, overriding to success")
+            return 0  -- override return value
+        end
+    end
+})
+```
+
+**`onCall` info table (extended):**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Syscall name |
+| `tid` | integer | Thread ID |
+| `formatted` | string | Pre-formatted output string |
+| `args` | table | Raw argument values (read/write) |
+| `skip` | boolean | Set to `true` to skip original syscall |
+| `retval` | integer | Fake return value (only used when `skip = true`) |
+
+**`onReturn` info table (extended):**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Syscall name |
+| `tid` | integer | Thread ID |
+| `retval` | integer | Actual (or fake) return value |
+| `errno_str` | string | Error description (only when retval < 0) |
+
+Return an integer from `onReturn` to override the return value. Return `nil` (or nothing) to keep the original.
+
+---
+
 ### Stack Trace in Syscall Callbacks
 
 Use `Thread.backtrace()` inside `onCall`/`onReturn` callbacks to see who triggered the syscall:
