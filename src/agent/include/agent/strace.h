@@ -52,9 +52,10 @@ int strace_remove(const char* syscall_name);
 void strace_remove_all(void);
 
 void strace_hook_handler(void);
-void strace_on_enter(uint64_t* saved_regs);
+int strace_on_enter(uint64_t* saved_regs);
 uint64_t strace_on_return(uint64_t ret_val);
 void* strace_get_original(void);
+uint64_t strace_get_skip_retval(void);
 
 SyscallDef* strace_find_def(const char* name);
 int strace_get_defs_by_category(const char* category, SyscallDef** out, int max);
