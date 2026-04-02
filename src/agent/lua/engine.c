@@ -11,6 +11,7 @@
 #include <agent/lua_jni.h>
 #include <agent/lua_java.h>
 #include <agent/lua_strace.h>
+#include <agent/lua_kcov.h>
 #include <agent/proc.h>
 
 #define TAG "RENEF_LUA"
@@ -250,6 +251,7 @@ LuaEngine* lua_engine_create(void) {
     register_memory_search_api(engine->L);
     register_file_api(engine->L);
     register_strace_api(engine->L);
+    register_kcov_api(engine->L);
 
     engine->initialized = true;
     LOGI("Lua engine initialized");

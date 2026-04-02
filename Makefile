@@ -167,7 +167,9 @@ AGENT_SRCS := src/agent/core/agent.c \
               src/agent/lua/api_jni.c \
               src/agent/lua/api_java.c \
               src/agent/strace/strace.c \
-              src/agent/lua/api_strace.c
+              src/agent/lua/api_strace.c \
+              src/agent/kcov/kcov.c \
+              src/agent/lua/api_kcov.c
 
 .PHONY: all clean clean-capstone clean-all client server payload deploy install test build-capstone setup setup-lua setup-asio setup-capstone-host release debug plugins client-android deploy-local renef-strace renef-strace-android
 
