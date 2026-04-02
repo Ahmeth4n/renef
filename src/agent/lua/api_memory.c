@@ -662,6 +662,152 @@ static int lua_mem_patch(lua_State* L) {
     return 1;
 }
 
+/*
+ * hexdump(target [, length])
+ *
+ * Frida-style hexdump. Works with any variable type:
+ *
+ *   hexdump(0x7f000000, 128)      -- address + length
+ *   hexdump(binary_string)        -- string/binary data
+ *   hexdump(args[2], 64)          -- hook arg (register = address)
+ *   hexdump(instance.raw, 128)    -- Java raw pointer
+ *
+ * Supported types:
+ *   integer  -> memory address, length required
+ *   string   -> binary data dump
+ *   userdata -> dereferences inner pointer
+ *   table    -> byte array {0x41, 0x42, ...}
+ *
+ * Return: formatted string (caller should print)
+ */
+static int lua_hexdump(lua_State* L) {
+    const uint8_t* data = NULL;
+    size_t data_len = 0;
+    uintptr_t base_addr = 0;
+    int free_data = 0;
+
+    int nargs = lua_gettop(L);
+    if (nargs < 1) {
+        return luaL_error(L, "hexdump: at least 1 argument required");
+    }
+
+    /* type detection */
+    if (lua_isinteger(L, 1)) {
+        /* integer -> memory address */
+        base_addr = (uintptr_t)lua_tointeger(L, 1);
+        if (nargs >= 2 && lua_isinteger(L, 2)) {
+            data_len = (size_t)lua_tointeger(L, 2);
+        } else {
+            data_len = 256; /* default */
+        }
+        if (data_len > 0x10000) data_len = 0x10000; /* max 64KB */
+        data = (const uint8_t*)base_addr;
+
+    } else if (lua_type(L, 1) == LUA_TSTRING) {
+        /* string → binary data */
+        data = (const uint8_t*)lua_tolstring(L, 1, &data_len);
+        base_addr = 0;
+        if (nargs >= 2 && lua_isinteger(L, 2)) {
+            size_t req = (size_t)lua_tointeger(L, 2);
+            if (req < data_len) data_len = req;
+        }
+
+    } else if (lua_isuserdata(L, 1)) {
+        /* userdata -> pointer (Java instance.raw, NativePointer, etc.) */
+        void** ptr = (void**)lua_touserdata(L, 1);
+        if (!ptr || !*ptr) {
+            return luaL_error(L, "hexdump: null userdata");
+        }
+        base_addr = (uintptr_t)(*ptr);
+        if (nargs >= 2 && lua_isinteger(L, 2)) {
+            data_len = (size_t)lua_tointeger(L, 2);
+        } else {
+            data_len = 256;
+        }
+        if (data_len > 0x10000) data_len = 0x10000;
+        data = (const uint8_t*)base_addr;
+
+    } else if (lua_istable(L, 1)) {
+        /* table → byte array {0x41, 0x42, ...} */
+        data_len = lua_rawlen(L, 1);
+        if (data_len == 0) {
+            lua_pushstring(L, "(empty table)");
+            return 1;
+        }
+        if (data_len > 0x10000) data_len = 0x10000;
+        uint8_t* buf = (uint8_t*)malloc(data_len);
+        if (!buf) return luaL_error(L, "hexdump: malloc failed");
+        for (size_t i = 0; i < data_len; i++) {
+            lua_rawgeti(L, 1, (int)(i + 1));
+            buf[i] = (uint8_t)lua_tointeger(L, -1);
+            lua_pop(L, 1);
+        }
+        data = buf;
+        free_data = 1;
+        base_addr = 0;
+
+    } else {
+        return luaL_error(L, "hexdump: unsupported type (expected integer, string, userdata or table)");
+    }
+
+    if (data_len == 0) {
+        lua_pushstring(L, "(empty)");
+        return 1;
+    }
+
+    /* per line: "XXXXXXXX  " (10) + hex (48) + " " (1) + ascii (16) + '\n' = ~76 chars */
+    size_t num_lines = (data_len + 15) / 16;
+    size_t header_len = 76; /* header line */
+    size_t buf_size = header_len + (num_lines * 78) + 1;
+    char* out = (char*)malloc(buf_size);
+    if (!out) {
+        if (free_data) free((void*)data);
+        return luaL_error(L, "hexdump: malloc failed");
+    }
+
+    size_t pos = 0;
+
+    /* header */
+    pos += snprintf(out + pos, buf_size - pos,
+        "           0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F  0123456789ABCDEF\n");
+
+    for (size_t i = 0; i < data_len; i += 16) {
+        /* offset */
+        pos += snprintf(out + pos, buf_size - pos, "%08lx  ", (unsigned long)(base_addr + i));
+
+        /* hex bytes */
+        char ascii[17];
+        int ascii_len = 0;
+
+        for (int j = 0; j < 16; j++) {
+            if (i + j < data_len) {
+                uint8_t b = data[i + j];
+                pos += snprintf(out + pos, buf_size - pos, "%02x ", b);
+                ascii[ascii_len++] = (b >= 0x20 && b < 0x7f) ? (char)b : '.';
+            } else {
+                pos += snprintf(out + pos, buf_size - pos, "   ");
+                ascii[ascii_len++] = ' ';
+            }
+            if (j == 7) {
+                out[pos++] = ' '; /* middle gap */
+            }
+        }
+
+        ascii[ascii_len] = '\0';
+        pos += snprintf(out + pos, buf_size - pos, " %s\n", ascii);
+    }
+
+    /* strip trailing newline */
+    if (pos > 0 && out[pos - 1] == '\n') {
+        out[--pos] = '\0';
+    }
+
+    lua_pushlstring(L, out, pos);
+    free(out);
+    if (free_data) free((void*)data);
+    return 1;
+}
+
 void register_memory_search_api(lua_State* L) {
     lua_newtable(L);
 
@@ -713,5 +859,12 @@ void register_memory_search_api(lua_State* L) {
     lua_pushcfunction(L, lua_mem_read_str);
     lua_setfield(L, -2, "readString");
 
+    lua_pushcfunction(L, lua_hexdump);
+    lua_setfield(L, -2, "hexdump");
+
     lua_setglobal(L, "Memory");
+
+    /* global hexdump() - Frida-compatible, callable from anywhere */
+    lua_pushcfunction(L, lua_hexdump);
+    lua_setglobal(L, "hexdump");
 }
