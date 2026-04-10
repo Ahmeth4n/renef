@@ -43,7 +43,7 @@ def main():
     print(f"[*] Eval output: {out}")
 
     # Find libc
-    libc = session.module_find("libc.so")
+    libc = session.Module.find("libc.so")
     if libc:
         print(f"[+] libc.so @ 0x{libc:x}")
 
