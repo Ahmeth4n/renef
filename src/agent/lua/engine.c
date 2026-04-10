@@ -8,6 +8,7 @@
 #include <agent/lua_memory.h>
 #include <agent/lua_thread.h>
 #include <agent/lua_file.h>
+#include <agent/lua_os.h>
 #include <agent/lua_jni.h>
 #include <agent/lua_java.h>
 #include <agent/lua_strace.h>
@@ -250,6 +251,7 @@ LuaEngine* lua_engine_create(void) {
     register_renef_api(engine->L);
     register_memory_search_api(engine->L);
     register_file_api(engine->L);
+    register_os_api(engine->L);
     register_strace_api(engine->L);
     register_kcov_api(engine->L);
 
