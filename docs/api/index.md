@@ -20,3 +20,4 @@ This section covers all available Lua APIs in Renef.
 - [Java API]({% link docs/api/java.md %}) - Java.use, class wrapper, instance methods
 - [Syscall API]({% link docs/api/syscall.md %}) - Syscall.trace, Syscall.stop, syscall tracing
 - [KCov API]({% link docs/api/kcov.md %}) - KCov.open, kernel coverage collection, coverage-guided fuzzing
+- [OS API]({% link docs/api/os.md %}) - OS.getpid, OS.kill, OS.tgkill, OS.listdir

@@ -268,9 +268,37 @@ print(session.hooks())
 
 ---
 
+#### `session.watch_start(callback)`
+
+Start real-time watch of hook output. The callback receives raw message bytes as they arrive from the agent.
+
+```python
+def on_message(data):
+    print(data.decode(), end='')
+
+session.watch_start(on_message)
+```
+
+**Parameters:**
+- `callback` - Function that receives `(message: bytes)`
+
+**Returns:** `0` on success, `-1` on failure
+
+---
+
+#### `session.watch_stop()`
+
+Stop real-time watch.
+
+```python
+session.watch_stop()
+```
+
+---
+
 #### `session.close()`
 
-Close the session.
+Close the session. Automatically stops watch if active.
 
 ```python
 session.close()

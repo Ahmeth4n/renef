@@ -19,3 +19,4 @@ This section covers all available commands in the Renef CLI.
 - [Real-time Monitoring]({% link docs/commands/monitoring.md %}) - watch
 - [Syscall Tracing]({% link docs/renef-strace.md %}) - renef-strace
 - [Utility Commands]({% link docs/commands/utility.md %}) - help, q, clear, color
+- [AI Implementation]({% link docs/commands/ai.md %}) - ai, @file references, multi-provider LLM
