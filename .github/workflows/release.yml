@@ -374,17 +374,25 @@ jobs:
           Dynamic Instrumentation Toolkit for Android ARM64
 
           ### What's New
-            - **TUI Mode**: Full terminal UI powered by FTXUI with Console, Hooks, Memory, Modules and Logs tabs. Launch with \`renef -m v\`.
+            - **AI Integration**: New \`ai\` command with multi-provider support (Ollama, OpenAI, Anthropic). Agentic tool calling lets the AI execute Renef commands to analyze the target before generating scripts. Use \`@path\` to inline file contents into prompts.
 
-            - **Windows (WSL) Build Support**: One-command build on Windows via \`build_wsl.bat\`. CMake now auto-downloads dependencies (capstone, asio) via FetchContent when local copies are not present.
+            - **Spawn Gate (\`--pause\`)**: New flag that freezes the target process after injection via SIGSTOP, ensuring hooks are installed before app initialization (e.g. root detection in onCreate). No ptrace, undetectable. New \`resume\` command for manual control.
 
-            - **Server Reconnection Fix**: Fixed reconnection issues when the server drops or the client needs to re-attach. TCP and UDS transports now handle stale connections properly.
+            - **Python Binding Update**: Added \`OS\`, \`File\`, \`Syscall\`, \`KCov\` wrappers, \`watch_start/stop\`, fixed \`basic.py\` example, 54 unit tests.
 
-            - **Up Key Sequence Fix**: Fixed command history navigation in the CLI. Arrow key sequences are now parsed correctly.
+            - **OS API**: New \`OS\` global with \`getpid()\`, \`kill()\`, \`tgkill()\`, \`listdir()\`.
 
-            - **File/Memory API Fixes**: Fixed file API and improved memory scan/read reliability. Process module enumeration is now more robust.
+            - **Connection Stability and Hook Memory Fix**: Stealth hooking via \`/proc/self/mem\`, connection liveness probe, auto-reconnect on send failure.
 
-            - **Native Hook Improvements**: Minor stability fixes for native ARM64 hooking.
+            - **Strace API**: Programmatic syscall tracing from Lua scripts via \`Syscall.trace()\`. Also available as standalone \`renef-strace\` binary — a ptrace-free syscall tracer using PLT/GOT hooking. Supports per-syscall \`onCall\`/\`onReturn\` callbacks, argument mutation, skip original, and category-based tracing (file, net, process).
+
+            - **KCOV Feature**: Kernel code coverage collection via \`KCov.open()\` for coverage-guided fuzzing. Tracks which kernel code paths are hit during syscalls.
+
+            - **Hexdump API**: Frida-style \`hexdump()\` for memory addresses, strings, byte tables and hook arguments. Also available as \`Memory.hexdump()\`.
+
+            - **Hook Auto-Cleanup**: All hooks are automatically uninstalled when the client disconnects.
+
+            - **Release Workflow**: Added \`renef-strace\` and \`client-android\` (on-device ARM64 client) to build and release packages.
           ${COMMITS}
 
           ### Downloads

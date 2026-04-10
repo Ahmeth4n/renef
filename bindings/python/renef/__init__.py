@@ -5,4 +5,4 @@ __all__ = [
     "Memory", "Module", "Thread",
     "OS", "File", "Syscall", "KCov",
 ]
-__version__ = "0.4.0"
+__version__ = "0.3.6"
