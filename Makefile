@@ -105,6 +105,7 @@ SERVER_SRCS := src/server/main.cpp \
                src/librenef/cmd/cmd_hookgen.cpp \
                src/librenef/cmd/cmd_strace.cpp \
                src/librenef/cmd/cmd_resume.cpp \
+               src/librenef/cmd/cmd_ai.cpp \
                src/librenef/util/string.cpp \
                src/librenef/util/crypto.cpp \
                src/librenef/util/socket.cpp \

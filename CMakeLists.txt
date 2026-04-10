@@ -104,6 +104,7 @@ add_library(renef_core STATIC
     src/librenef/cmd/cmd_plugin.cpp
     src/librenef/cmd/cmd_strace.cpp
     src/librenef/cmd/cmd_resume.cpp
+    src/librenef/cmd/cmd_ai.cpp
 
     # Transport
     src/librenef/transport/uds.cpp
