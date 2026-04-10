@@ -11,11 +11,13 @@
 #include <unistd.h>
 #include <vector>
 #include <chrono>
+#include <signal.h>
 
 #define RENEF_PAYLOAD_PATH "/data/local/tmp/libagent.so"
 
 struct SpawnParams {
   std::string pkg_name;
+  bool pause = false;
 };
 
 static SpawnParams parse_spawn_params(const char *cmd_buffer, size_t cmd_size) {
@@ -61,6 +63,11 @@ static SpawnParams parse_spawn_params(const char *cmd_buffer, size_t cmd_size) {
   };
   remove_flag("--verbose");
   remove_flag("-v");
+
+  if (args.find("--pause") != std::string::npos) {
+    params.pause = true;
+    remove_flag("--pause");
+  }
 
   size_t start = args.find_first_not_of(" \t");
   size_t end = args.find_last_not_of(" \t");
@@ -166,6 +173,18 @@ public:
           sock.send_data(con_cmd.c_str(), con_cmd.length(), false);
 
       sock.set_session_key(session_key);
+
+      if (params.pause) {
+        // Spawn gate: freeze process AFTER agent is connected.
+        // The agent socket is open and buffered by kernel.
+        // Next exec command will SIGCONT before polling for response,
+        // so the agent reads buffered script data and installs hooks
+        // before the main thread reaches onCreate.
+        kill(pid, SIGSTOP);
+        CommandRegistry::instance().gated_pid = pid;
+        std::cerr << "  [spawn-gate] process frozen (pid=" << pid
+                  << "), will resume on first exec" << std::endl;
+      }
 
       snprintf(response, sizeof(response), "OK %d\n", pid);
     } else {

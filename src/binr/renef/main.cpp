@@ -909,6 +909,7 @@ int main(int argc, char *argv[]) {
     std::string spawn_app;
     bool view_mode = false;
     bool watch_mode = false;
+    bool pause_mode = false;
 
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
@@ -944,6 +945,9 @@ int main(int argc, char *argv[]) {
         else if (arg == "-w" || arg == "--watch") {
             watch_mode = true;
         }
+        else if (arg == "-p" || arg == "--pause") {
+            pause_mode = true;
+        }
         else if (arg == "-v" || arg == "--verbose") {
             g_verbose_mode = true;
         }
@@ -959,6 +963,7 @@ int main(int argc, char *argv[]) {
             std::cout << "  --local                  Local mode: connect via UDS (for Termux/on-device)\n";
             std::cout << "  -m, --mode <mode>        Interface mode: v/view (TUI) [default: CLI]\n";
             std::cout << "  -w, --watch              Auto-watch hook output after loading script\n";
+            std::cout << "  -p, --pause              Freeze app after spawn until script is loaded (spawn gate)\n";
             std::cout << "  -v, --verbose            Enable verbose mode (show agent debug logs)\n";
             std::cout << "  -h, --help               Show this help\n";
             std::cout << "\nExamples:\n";
@@ -1085,7 +1090,8 @@ int main(int argc, char *argv[]) {
 
         if (!spawn_app.empty()) {
             start_cmd = "spawn " + spawn_app;
-            std::cout << "[*] Spawning " << spawn_app << "...\n";
+            if (pause_mode) start_cmd += " --pause";
+            std::cout << "[*] Spawning " << spawn_app << (pause_mode ? " (paused)" : "") << "...\n";
         } else {
             start_cmd = "attach " + attach_pid;
             std::cout << "[*] Attaching to PID " << attach_pid << "...\n";
@@ -1147,6 +1153,9 @@ int main(int argc, char *argv[]) {
     }
 
     if (auto_started) {
+        if (pause_mode && script_file.empty()) {
+            std::cout << "\n[*] Process is paused. Type 'resume' to continue or 'l <script>' to load a script.\n";
+        }
         std::cout << "\n[*] Interactive shell ready\n";
         std::cout << "[*] You can run commands or enter Lua code\n\n";
     }

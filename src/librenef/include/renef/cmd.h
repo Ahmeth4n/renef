@@ -51,6 +51,7 @@ public:
 
 
     int current_pid = -1;
+    int gated_pid = -1;  // PID that is SIGSTOP'd waiting for first exec
     SocketHelper sock;
 
     int get_current_pid() const;

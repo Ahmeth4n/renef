@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <cstring>
+#include <signal.h>
 
 class Eval : public CommandDispatcher {
 public:
@@ -49,6 +50,17 @@ public:
         fprintf(stderr, "[DEBUG exec] Sending %zu bytes to agent\n", command.length());
         ssize_t sent = socket_helper.send_data(command.c_str(), command.length());
         fprintf(stderr, "[DEBUG exec] Actually sent %zd bytes\n", sent);
+
+        // Spawn gate: if process was frozen by spawn, resume it now.
+        // The exec data is already buffered in the kernel socket buffer,
+        // so the agent will read and install hooks before the main thread
+        // reaches onCreate.
+        int gated = CommandRegistry::instance().gated_pid;
+        if (gated > 0 && gated == pid) {
+            fprintf(stderr, "[spawn-gate] Resuming gated process (pid=%d)\n", gated);
+            kill(gated, SIGCONT);
+            CommandRegistry::instance().gated_pid = -1;
+        }
 
         int flags = fcntl(sock, F_GETFL, 0);
         fcntl(sock, F_SETFL, flags | O_NONBLOCK);
