@@ -90,7 +90,17 @@ void ServerConnection::disconnect() {
 }
 
 bool ServerConnection::is_connected() const {
-    return sock_fd >= 0;
+    if (sock_fd < 0) return false;
+
+    char probe;
+    ssize_t n = recv(sock_fd, &probe, 1, MSG_PEEK | MSG_DONTWAIT);
+    if (n == 0) {
+        return false;
+    }
+    if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+        return false;
+    }
+    return true;
 }
 
 bool ServerConnection::send(const std::string& data) {
