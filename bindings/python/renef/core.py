@@ -34,7 +34,7 @@ class RenefResult(Structure):
     ]
 
 
-MessageCallback = CFUNCTYPE(None, c_char_p, c_size_t, c_void_p)
+RenefMessageCallback = CFUNCTYPE(None, c_char_p, c_size_t, c_void_p)
 
 
 class Memory:
@@ -206,6 +206,199 @@ class Thread:
         return frames
 
 
+class OS:
+    """OS API wrapper - process management and filesystem listing via Lua eval"""
+
+    def __init__(self, session: 'RenefSession'):
+        self._session = session
+
+    def _eval_int(self, code: str) -> Optional[int]:
+        ok, out, _ = self._session.eval(code)
+        if ok and out:
+            try:
+                return int(out.strip())
+            except ValueError:
+                return None
+        return None
+
+    def getpid(self) -> Optional[int]:
+        """Get current process ID"""
+        return self._eval_int("print(OS.getpid())")
+
+    def kill(self, pid: int, sig: int) -> Optional[int]:
+        """Send signal to a process"""
+        return self._eval_int(f"print(OS.kill({pid}, {sig}))")
+
+    def tgkill(self, tgid: int, tid: int, sig: int) -> Optional[int]:
+        """Send signal to a specific thread"""
+        return self._eval_int(f"print(OS.tgkill({tgid}, {tid}, {sig}))")
+
+    def listdir(self, path: str) -> Optional[List[str]]:
+        """List directory contents (excludes dotfiles)"""
+        code = f"""
+local t = OS.listdir("{path}")
+if t then
+    for i, v in ipairs(t) do print(v) end
+else
+    print("__NIL__")
+end
+"""
+        ok, out, _ = self._session.eval(code)
+        if ok and out:
+            out = out.strip()
+            if out == "__NIL__":
+                return None
+            return out.split('\n') if out else []
+        return None
+
+
+class File:
+    """File API wrapper - filesystem operations via Lua eval"""
+
+    def __init__(self, session: 'RenefSession'):
+        self._session = session
+
+    def read(self, path: str) -> Optional[str]:
+        """Read file contents"""
+        ok, out, _ = self._session.eval(f"""
+local c = File.read("{path}")
+if c then print(c) else print("__NIL__") end
+""")
+        if ok and out:
+            out = out.strip()
+            return None if out == "__NIL__" else out
+        return None
+
+    def exists(self, path: str) -> bool:
+        """Check if file exists"""
+        ok, out, _ = self._session.eval(f'print(File.exists("{path}"))')
+        return ok and out and out.strip() == "true"
+
+    def readlink(self, path: str) -> Optional[str]:
+        """Read symlink target"""
+        ok, out, _ = self._session.eval(f"""
+local t = File.readlink("{path}")
+if t then print(t) else print("__NIL__") end
+""")
+        if ok and out:
+            out = out.strip()
+            return None if out == "__NIL__" else out
+        return None
+
+    def fdpath(self, fd: int) -> Optional[str]:
+        """Get path for file descriptor"""
+        ok, out, _ = self._session.eval(f"""
+local t = File.fdpath({fd})
+if t then print(t) else print("__NIL__") end
+""")
+        if ok and out:
+            out = out.strip()
+            return None if out == "__NIL__" else out
+        return None
+
+    def write(self, path: str, addr: int, size: int) -> bool:
+        """Dump memory region to file"""
+        ok, out, _ = self._session.eval(f'print(File.write("{path}", {addr}, {size}))')
+        return ok and out and out.strip() == "true"
+
+
+class Syscall:
+    """Syscall API wrapper - syscall tracing via Lua eval"""
+
+    def __init__(self, session: 'RenefSession'):
+        self._session = session
+
+    def trace(self, *names: str) -> Tuple[bool, Optional[str], Optional[str]]:
+        """
+        Start tracing syscalls
+
+        Args:
+            *names: Syscall names to trace (e.g. "openat", "read", "write")
+
+        Returns:
+            (success, output, error)
+        """
+        args = ', '.join(f'"{n}"' for n in names)
+        return self._session.eval(f"Syscall.trace({args})")
+
+    def trace_category(self, category: str) -> Tuple[bool, Optional[str], Optional[str]]:
+        """
+        Trace all syscalls in a category
+
+        Args:
+            category: Category name (e.g. "file", "net", "process")
+        """
+        return self._session.eval(f'Syscall.trace({{category="{category}"}})')
+
+    def stop(self) -> Tuple[bool, Optional[str], Optional[str]]:
+        """Stop syscall tracing"""
+        return self._session.eval("Syscall.stop()")
+
+
+class KCov:
+    """KCov API wrapper - kernel coverage collection via Lua eval"""
+
+    def __init__(self, session: 'RenefSession'):
+        self._session = session
+
+    def start(self, buf_size: int = 0) -> Tuple[bool, Optional[str], Optional[str]]:
+        """
+        Open KCOV and start coverage collection
+
+        Args:
+            buf_size: Buffer size (0 for default 256K entries)
+        """
+        code = f"""
+_kcov = KCov.open({buf_size})
+_kcov:enable()
+print("ok")
+"""
+        return self._session.eval(code)
+
+    def stop(self) -> Tuple[bool, Optional[str], Optional[str]]:
+        """Stop coverage and close"""
+        return self._session.eval("""
+if _kcov then _kcov:disable(); _kcov:close(); _kcov = nil end
+print("ok")
+""")
+
+    def collect(self) -> Optional[List[int]]:
+        """Collect coverage PCs"""
+        ok, out, _ = self._session.eval("""
+if _kcov then
+    local pcs = _kcov:collect()
+    for _, pc in ipairs(pcs) do print(string.format("0x%x", pc)) end
+else
+    print("__NIL__")
+end
+""")
+        if ok and out:
+            out = out.strip()
+            if out == "__NIL__":
+                return None
+            return [int(line, 16) for line in out.split('\n') if line]
+        return None
+
+    def count(self) -> Optional[int]:
+        """Get number of collected PCs"""
+        ok, out, _ = self._session.eval("""
+if _kcov then print(_kcov:count()) else print(-1) end
+""")
+        if ok and out:
+            try:
+                return int(out.strip())
+            except ValueError:
+                return None
+        return None
+
+    def reset(self) -> Tuple[bool, Optional[str], Optional[str]]:
+        """Reset coverage buffer"""
+        return self._session.eval("""
+if _kcov then _kcov:reset() end
+print("ok")
+""")
+
+
 class RenefSession:
     """Session wrapper for attached/spawned process"""
 
@@ -215,6 +408,10 @@ class RenefSession:
         self._memory = None
         self._module = None
         self._thread = None
+        self._os = None
+        self._file = None
+        self._syscall = None
+        self._kcov = None
 
     def __del__(self):
         self.close()
@@ -227,6 +424,7 @@ class RenefSession:
 
     def close(self):
         if self._handle:
+            self.watch_stop()
             self._lib.renef_session_close(self._handle)
             self._handle = None
 
@@ -257,6 +455,34 @@ class RenefSession:
         if self._thread is None:
             self._thread = Thread(self)
         return self._thread
+
+    @property
+    def OS(self) -> OS:
+        """Access OS API"""
+        if self._os is None:
+            self._os = OS(self)
+        return self._os
+
+    @property
+    def File(self) -> File:
+        """Access File API"""
+        if self._file is None:
+            self._file = File(self)
+        return self._file
+
+    @property
+    def Syscall(self) -> Syscall:
+        """Access Syscall API"""
+        if self._syscall is None:
+            self._syscall = Syscall(self)
+        return self._syscall
+
+    @property
+    def KCov(self) -> KCov:
+        """Access KCov API"""
+        if self._kcov is None:
+            self._kcov = KCov(self)
+        return self._kcov
 
     def eval(self, lua_code: str) -> Tuple[bool, Optional[str], Optional[str]]:
         """
@@ -363,6 +589,31 @@ class RenefSession:
         output = result.output.decode() if result.output else ""
         self._lib.renef_result_free(ctypes.byref(result))
         return output
+
+    def watch_start(self, callback) -> int:
+        """
+        Start real-time watch of hook output
+
+        Args:
+            callback: Function that receives (message: bytes, length: int)
+
+        Returns:
+            0 on success, -1 on failure
+        """
+        if not self._handle:
+            return -1
+
+        def _wrapper(msg, length, _user_data):
+            callback(msg[:length])
+
+        self._watch_cb = RenefMessageCallback(_wrapper)
+        return self._lib.renef_watch_start(self._handle, self._watch_cb, None)
+
+    def watch_stop(self):
+        """Stop real-time watch"""
+        if self._handle and hasattr(self, '_watch_cb') and self._watch_cb:
+            self._lib.renef_watch_stop(self._handle)
+            self._watch_cb = None
 
 
 class Renef:
@@ -472,6 +723,13 @@ class Renef:
 
         self._lib.renef_hooks_list.argtypes = [c_void_p]
         self._lib.renef_hooks_list.restype = RenefResult
+
+        # Watch API
+        self._lib.renef_watch_start.argtypes = [c_void_p, RenefMessageCallback, c_void_p]
+        self._lib.renef_watch_start.restype = c_int
+
+        self._lib.renef_watch_stop.argtypes = [c_void_p]
+        self._lib.renef_watch_stop.restype = None
 
         # Utility
         self._lib.renef_result_free.argtypes = [POINTER(RenefResult)]
