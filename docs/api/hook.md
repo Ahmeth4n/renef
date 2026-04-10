@@ -7,6 +7,9 @@ nav_order: 3
 
 # Hook API
 
+{: .note }
+> Renef's hook engine writes to memory via `/proc/self/mem` (`pwrite`) instead of `mprotect`. This bypasses SELinux/seccomp restrictions, maintains W^X compliance, and leaves no permission changes visible in `/proc/self/maps`. Falls back to `mprotect` automatically if `/proc/self/mem` is unavailable.
+
 ## `hook(library, offset, callbacks)`
 
 Hook a native function by library name and offset.
