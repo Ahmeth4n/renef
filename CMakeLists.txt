@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(renef VERSION 0.3.5)
+project(renef VERSION 0.3.6)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -164,7 +164,7 @@ target_link_libraries(renef_shared PUBLIC capstone)
 target_compile_definitions(renef_shared PUBLIC CAPSTONE_AARCH64_COMPAT_HEADER)
 set_target_properties(renef_shared PROPERTIES
     OUTPUT_NAME "renef"
-    VERSION 0.3.5
+    VERSION 0.3.6
     SOVERSION 0
 )
 
