@@ -902,6 +902,498 @@ std::string send_command(const std::string& command) {
     return full_response;
 }
 
+static std::string send_command_silent(const std::string& command) {
+    ServerConnection& conn = ServerConnection::instance();
+    if (!conn.is_connected()) return "";
+
+    int fd = conn.get_socket_fd();
+    if (fd < 0) return "";
+
+    {
+        char drain[4096];
+        int old_flags = fcntl(fd, F_GETFL, 0);
+        fcntl(fd, F_SETFL, old_flags | O_NONBLOCK);
+        while (recv(fd, drain, sizeof(drain), 0) > 0) {}
+        fcntl(fd, F_SETFL, old_flags);
+    }
+
+    if (!conn.send(command + "\n")) return "";
+
+    std::string result;
+    char buf[4096];
+    int old_flags = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, old_flags | O_NONBLOCK);
+
+    int timeout_count = 0;
+    while (timeout_count < 100) { // 10 seconds max
+        struct pollfd pfd = {fd, POLLIN, 0};
+        int ret = poll(&pfd, 1, 100);
+        if (ret > 0 && (pfd.revents & POLLIN)) {
+            ssize_t n = recv(fd, buf, sizeof(buf) - 1, 0);
+            if (n > 0) {
+                buf[n] = '\0';
+                result += buf;
+                if (strstr(buf, "\342\234\223") || strstr(buf, "\342\234\227")) break;
+                timeout_count = 0;
+            } else if (n == 0) {
+                break;
+            }
+        } else {
+            timeout_count++;
+        }
+    }
+
+    fcntl(fd, F_SETFL, old_flags);
+
+    size_t marker = result.find("\342\234\223");
+    if (marker == std::string::npos) marker = result.find("\342\234\227");
+    if (marker != std::string::npos) result = result.substr(0, marker);
+
+    return result;
+}
+
+// ─── Client-side AI command (multi-provider) ─────────────────────
+
+enum AIProvider { AI_OLLAMA, AI_OPENAI, AI_ANTHROPIC };
+
+static std::string ai_https_post(const std::string& host, int port, bool use_tls,
+                                 const std::string& path, const std::string& body,
+                                 const std::string& auth_header = "") {
+    // For HTTPS (OpenAI/Anthropic) we shell out to curl — simpler than implementing TLS
+    if (use_tls) {
+        std::string url = "https://" + host + path;
+        std::string cmd = "curl -s --max-time 300 -X POST \"" + url + "\" "
+            "-H \"Content-Type: application/json\" ";
+        if (!auth_header.empty()) cmd += auth_header + " ";
+        // Write body to temp file to avoid shell escaping issues
+        std::string tmp = "/tmp/.renef_ai_body.json";
+        FILE* f = fopen(tmp.c_str(), "w");
+        if (f) { fwrite(body.c_str(), 1, body.size(), f); fclose(f); }
+        cmd += "-d @" + tmp + " 2>/dev/null";
+        FILE* pipe = popen(cmd.c_str(), "r");
+        if (!pipe) return "";
+        std::string result;
+        char buf[4096];
+        while (fgets(buf, sizeof(buf), pipe)) result += buf;
+        pclose(pipe);
+        return result;
+    }
+
+    // Plain HTTP (Ollama) — raw socket
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) return "";
+
+    struct sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    inet_pton(AF_INET, host.c_str(), &addr.sin_addr);
+
+    struct timeval tv = {300, 0};
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        close(sock);
+        return "";
+    }
+
+    std::string request =
+        "POST " + path + " HTTP/1.1\r\n"
+        "Host: " + host + "\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: " + std::to_string(body.size()) + "\r\n"
+        "Connection: close\r\n\r\n" + body;
+
+    size_t total_sent = 0;
+    while (total_sent < request.size()) {
+        ssize_t sent = ::send(sock, request.c_str() + total_sent, request.size() - total_sent, 0);
+        if (sent < 0) { close(sock); return ""; }
+        total_sent += sent;
+    }
+
+    std::string response;
+    char buf[4096];
+    int retries = 0;
+    while (retries < 3) {
+        ssize_t n = recv(sock, buf, sizeof(buf) - 1, 0);
+        if (n > 0) { buf[n] = '\0'; response += buf; retries = 0; }
+        else if (n == 0) break;
+        else if (errno == EAGAIN || errno == EWOULDBLOCK) { retries++; continue; }
+        else break;
+    }
+    close(sock);
+
+    size_t body_start = response.find("\r\n\r\n");
+    if (body_start != std::string::npos) return response.substr(body_start + 4);
+    return response;
+}
+
+static std::string ai_json_escape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 64);
+    for (char c : s) {
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if ((unsigned char)c < 0x20) {
+                    char hex[8]; snprintf(hex, sizeof(hex), "\\u%04x", c); out += hex;
+                } else { out += c; }
+        }
+    }
+    return out;
+}
+
+static std::string ai_json_extract(const std::string& json, const std::string& field) {
+    std::string key = "\"" + field + "\"";
+    size_t pos = json.find(key);
+    if (pos == std::string::npos) return "";
+    pos = json.find(':', pos + key.size());
+    if (pos == std::string::npos) return "";
+    pos++;
+    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\n')) pos++;
+    if (pos >= json.size() || json[pos] != '"') return "";
+    pos++;
+    std::string result;
+    while (pos < json.size() && json[pos] != '"') {
+        if (json[pos] == '\\' && pos + 1 < json.size()) {
+            pos++;
+            switch (json[pos]) {
+                case 'n': result += '\n'; break;
+                case 't': result += '\t'; break;
+                case '"': result += '"'; break;
+                case '\\': result += '\\'; break;
+                default: result += json[pos]; break;
+            }
+        } else { result += json[pos]; }
+        pos++;
+    }
+    return result;
+}
+
+
+static const char* TOOL_DEF_OPENAI = R"([{"type":"function","function":{"name":"renef_exec","description":"Execute Lua code in the target Android process. Use print() for output.","parameters":{"type":"object","properties":{"command":{"type":"string","description":"Lua code. Use print() for output."}},"required":["command"]}}}])";
+
+static const char* TOOL_DEF_ANTHROPIC = R"([{"name":"renef_exec","description":"Execute Lua code in the target Android process. Use print() for output.","input_schema":{"type":"object","properties":{"command":{"type":"string","description":"Lua code. Use print() for output."}},"required":["command"]}}])";
+
+struct AIRequest {
+    std::string host;
+    int port;
+    bool use_tls;
+    std::string path;
+    std::string auth_header;
+};
+
+struct AIResponse {
+    std::string content;
+    std::string tool_cmd;
+    std::string raw;
+};
+
+static AIRequest ai_build_request(AIProvider provider) {
+    AIRequest req;
+    switch (provider) {
+        case AI_OPENAI:
+            req.host = "api.openai.com"; req.port = 443; req.use_tls = true;
+            req.path = "/v1/chat/completions";
+            req.auth_header = "-H \"Authorization: Bearer " + std::string(getenv("OPENAI_API_KEY") ?: "") + "\"";
+            break;
+        case AI_ANTHROPIC:
+            req.host = "api.anthropic.com"; req.port = 443; req.use_tls = true;
+            req.path = "/v1/messages";
+            req.auth_header = "-H \"x-api-key: " + std::string(getenv("ANTHROPIC_API_KEY") ?: "") + "\" "
+                "-H \"anthropic-version: 2023-06-01\"";
+            break;
+        default: { // OLLAMA
+            const char* h = getenv("OLLAMA_HOST");
+            const char* p = getenv("OLLAMA_PORT");
+            req.host = h ? h : "127.0.0.1";
+            req.port = p ? atoi(p) : 11434;
+            req.use_tls = false;
+            req.path = "/api/chat";
+            break;
+        }
+    }
+    return req;
+}
+
+static std::string ai_build_body(AIProvider provider, const std::string& model,
+                                  const std::string& system_prompt,
+                                  const std::string& messages_json,
+                                  bool use_tools) {
+    switch (provider) {
+        case AI_OPENAI: {
+            std::string body = "{\"model\":\"" + model + "\",\"messages\":" + messages_json;
+            if (use_tools) body += ",\"tools\":" + std::string(TOOL_DEF_OPENAI);
+            body += "}";
+            return body;
+        }
+        case AI_ANTHROPIC: {
+            // Anthropic: system is separate, messages don't include system role
+            // Extract user/assistant/tool messages from messages_json (skip system)
+            std::string body = "{\"model\":\"" + model + "\","
+                "\"max_tokens\":4096,"
+                "\"system\":\"" + ai_json_escape(system_prompt) + "\","
+                "\"messages\":" + messages_json;
+            if (use_tools) body += ",\"tools\":" + std::string(TOOL_DEF_ANTHROPIC);
+            body += "}";
+            return body;
+        }
+        default: { // OLLAMA
+            std::string body = "{\"model\":\"" + model + "\",\"messages\":" + messages_json + ",\"stream\":false";
+            if (use_tools) {
+                body += ",\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"renef_exec\","
+                    "\"description\":\"Execute Lua code. Use print() for output.\","
+                    "\"parameters\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},"
+                    "\"required\":[\"command\"]}}}]";
+            }
+            body += "}";
+            return body;
+        }
+    }
+}
+
+static AIResponse ai_parse_response(AIProvider provider, const std::string& raw) {
+    AIResponse resp;
+    resp.raw = raw;
+
+    switch (provider) {
+        case AI_OPENAI: {
+            // OpenAI: {"choices":[{"message":{"content":"...","tool_calls":[{"function":{"arguments":"{\"command\":\"...\"}"}}]}}]}
+            resp.content = ai_json_extract(raw, "content");
+            if (raw.find("\"tool_calls\"") != std::string::npos) {
+                // OpenAI tool_calls arguments is a JSON STRING, not object
+                std::string args_str = ai_json_extract(raw, "arguments");
+                if (!args_str.empty()) {
+                    resp.tool_cmd = ai_json_extract(args_str, "command");
+                }
+            }
+            break;
+        }
+        case AI_ANTHROPIC: {
+            // Anthropic: {"content":[{"type":"text","text":"..."},{"type":"tool_use","input":{"command":"..."}}]}
+            if (raw.find("\"tool_use\"") != std::string::npos) {
+                size_t tool_pos = raw.find("\"tool_use\"");
+                size_t input_pos = raw.find("\"input\"", tool_pos);
+                if (input_pos != std::string::npos) {
+                    resp.tool_cmd = ai_json_extract(raw.substr(input_pos), "command");
+                }
+            }
+            size_t text_pos = raw.find("\"text\"");
+            if (text_pos != std::string::npos) {
+                resp.content = ai_json_extract(raw.substr(text_pos - 1), "text");
+            }
+            break;
+        }
+        default: { // OLLAMA
+            resp.content = ai_json_extract(raw, "content");
+            if (raw.find("\"tool_calls\"") != std::string::npos) {
+                size_t args_pos = raw.find("\"arguments\"");
+                if (args_pos != std::string::npos)
+                    resp.tool_cmd = ai_json_extract(raw.substr(args_pos), "command");
+            }
+            if (resp.tool_cmd.empty() && !resp.content.empty() && resp.content.size() < 300 && resp.content.find("```") == std::string::npos) {
+                std::string maybe = ai_json_extract(resp.content, "command");
+                if (!maybe.empty()) resp.tool_cmd = maybe;
+            }
+            break;
+        }
+    }
+
+    // Check for API errors
+    std::string err = ai_json_extract(raw, "error");
+    if (err.empty()) err = ai_json_extract(raw, "message"); // Anthropic error format
+    if (!err.empty() && resp.content.empty() && resp.tool_cmd.empty()) {
+        resp.content = "ERROR: " + err;
+    }
+
+    return resp;
+}
+
+static std::string resolve_file_refs(const std::string& prompt) {
+    std::string result;
+    size_t pos = 0;
+
+    while (pos < prompt.size()) {
+        size_t at = prompt.find('@', pos);
+        if (at == std::string::npos) {
+            result += prompt.substr(pos);
+            break;
+        }
+
+        result += prompt.substr(pos, at - pos);
+
+        size_t path_start = at + 1;
+        size_t path_end = path_start;
+        while (path_end < prompt.size() && prompt[path_end] != ' ' && prompt[path_end] != '\t') {
+            path_end++;
+        }
+
+        std::string path = prompt.substr(path_start, path_end - path_start);
+
+        if (!path.empty()) {
+            std::ifstream f(path);
+            if (f.good()) {
+                std::string content((std::istreambuf_iterator<char>(f)), {});
+                std::cout << "[AI] Read " << content.size() << " bytes from " << path << "\n";
+                result += "\n--- File: " + path + " ---\n" + content + "\n--- End of file ---\n";
+            } else {
+                std::cerr << "[AI] Cannot read: " << path << "\n";
+                result += "@" + path;
+            }
+        }
+
+        pos = path_end;
+    }
+
+    return result;
+}
+
+static bool handle_ai_command(const std::string& raw_prompt) {
+    std::string prompt = resolve_file_refs(raw_prompt);
+
+    const char* env_provider = getenv("RENEF_AI_PROVIDER");
+    AIProvider provider = AI_OLLAMA;
+    if (env_provider) {
+        std::string p = env_provider;
+        if (p == "openai") provider = AI_OPENAI;
+        else if (p == "anthropic") provider = AI_ANTHROPIC;
+    } else if (getenv("OPENAI_API_KEY")) {
+        provider = AI_OPENAI;
+    } else if (getenv("ANTHROPIC_API_KEY")) {
+        provider = AI_ANTHROPIC;
+    }
+
+    const char* env_model = getenv("OLLAMA_MODEL");
+    std::string model;
+    if (env_model) {
+        model = env_model;
+    } else {
+        switch (provider) {
+            case AI_OPENAI:    model = "gpt-4o"; break;
+            case AI_ANTHROPIC: model = "claude-sonnet-4-20250514"; break;
+            default:           model = "llama3.1"; break;
+        }
+    }
+
+    const char* provider_names[] = {"Ollama", "OpenAI", "Anthropic"};
+    std::cout << "[AI] Provider: " << provider_names[provider] << " (" << model << ")\n";
+
+    std::string system_prompt;
+    const char* prompt_paths[] = {"RENEF_AI_PROMPT.md", "/data/local/tmp/renef_prompt.md", nullptr};
+    const char* env_prompt_path = getenv("RENEF_AI_PROMPT");
+    if (env_prompt_path) {
+        std::ifstream f(env_prompt_path);
+        if (f.good()) system_prompt.assign(std::istreambuf_iterator<char>(f), {});
+    }
+    if (system_prompt.empty()) {
+        for (int i = 0; prompt_paths[i]; i++) {
+            std::ifstream f(prompt_paths[i]);
+            if (f.good()) { system_prompt.assign(std::istreambuf_iterator<char>(f), {}); break; }
+        }
+    }
+    if (system_prompt.empty()) {
+        system_prompt = "You are a Renef scripting assistant for Android instrumentation using Lua. Do NOT use Frida syntax.";
+    }
+
+    bool has_target = (CommandRegistry::instance().get_current_pid() > 0);
+
+    if (has_target) {
+        system_prompt += "\n\nYou have a renef_exec tool to run Lua code on the target. "
+            "Use it to gather info (always use print() for output). "
+            "Analyze the target first, then generate the final script.";
+    }
+
+    std::string messages;
+    if (provider == AI_ANTHROPIC) {
+        messages = "[{\"role\":\"user\",\"content\":\"" + ai_json_escape(prompt) + "\"}]";
+    } else {
+        messages = "[{\"role\":\"system\",\"content\":\"" + ai_json_escape(system_prompt) + "\"},"
+                   "{\"role\":\"user\",\"content\":\"" + ai_json_escape(prompt) + "\"}]";
+    }
+
+    std::cout << "[AI] Thinking...\n";
+
+    AIRequest req = ai_build_request(provider);
+    std::string final_text;
+    const int max_rounds = 10;
+
+    for (int round = 0; round < max_rounds; round++) {
+        std::string body = ai_build_body(provider, model, system_prompt, messages, has_target);
+        std::string raw = ai_https_post(req.host, req.port, req.use_tls, req.path, body, req.auth_header);
+
+        if (raw.empty()) {
+            std::cerr << "ERROR: Cannot connect to " << provider_names[provider] << " at " << req.host << "\n";
+            if (provider == AI_OLLAMA) std::cerr << "Make sure Ollama is running: ollama serve\n";
+            return true;
+        }
+
+        AIResponse resp = ai_parse_response(provider, raw);
+
+        if (resp.content.find("ERROR:") == 0 && resp.tool_cmd.empty()) {
+            std::cerr << resp.content << "\n";
+            return true;
+        }
+
+        if (has_target && !resp.tool_cmd.empty()) {
+            std::cout << "[AI] exec: " << resp.tool_cmd << "\n";
+
+            std::string result = send_command_silent("exec " + resp.tool_cmd);
+            if (result.size() > 4000) result = result.substr(0, 4000) + "\n...(truncated)";
+
+            std::string preview = result.substr(0, 200);
+            if (result.size() > 200) preview += "...";
+            std::cout << "[AI] result: " << preview << "\n";
+
+            messages.pop_back(); // remove ]
+
+            if (provider == AI_ANTHROPIC) {
+                // Anthropic: assistant with tool_use block, then user with tool_result
+                messages += ",{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"tc_1\",\"name\":\"renef_exec\","
+                    "\"input\":{\"command\":\"" + ai_json_escape(resp.tool_cmd) + "\"}}]},"
+                    "{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"tc_1\","
+                    "\"content\":\"" + ai_json_escape(result) + "\"}]}]";
+            } else {
+                // OpenAI / Ollama: assistant message + tool message
+                messages += ",{\"role\":\"assistant\",\"content\":\"" + ai_json_escape(resp.content) + "\"},"
+                    "{\"role\":\"tool\",\"content\":\"" + ai_json_escape(result) + "\"}]";
+            }
+
+            continue;
+        }
+
+        final_text = resp.content;
+        break;
+    }
+
+    if (final_text.empty()) {
+        std::cerr << "ERROR: No response from AI\n";
+        return true;
+    }
+
+    std::cout << "\n─── AI Response ───\n" << final_text << "\n";
+
+    size_t code_start = final_text.find("```lua");
+    if (code_start == std::string::npos) code_start = final_text.find("```");
+    if (code_start != std::string::npos) {
+        code_start = final_text.find('\n', code_start);
+        if (code_start != std::string::npos) {
+            code_start++;
+            size_t code_end = final_text.find("```", code_start);
+            if (code_end != std::string::npos) {
+                std::string code = final_text.substr(code_start, code_end - code_start);
+                std::cout << "\n─── Extracted Script ───\n" << code;
+                std::cout << "\n───\nTo load: exec <paste script>\nOr save to file and: l <path>\n";
+            }
+        }
+    }
+
+    return true;
+}
+
 int main(int argc, char *argv[]) {
     std::string device_id;
     std::string script_file;
@@ -1370,6 +1862,14 @@ int main(int argc, char *argv[]) {
                 args = "";
             }
             handle_color_command(args);
+            free(input);
+            continue;
+        }
+
+        // Handle AI command on client side (Ollama is on PC, not device)
+        if (command.rfind("ai ", 0) == 0 || command == "ai") {
+            std::string ai_prompt = command.size() > 3 ? command.substr(3) : "";
+            handle_ai_command(ai_prompt);
             free(input);
             continue;
         }

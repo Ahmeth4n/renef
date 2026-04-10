@@ -39,6 +39,7 @@ std::unique_ptr<CommandDispatcher> create_hookgen_command();
 std::unique_ptr<CommandDispatcher> create_verbose_command();
 std::unique_ptr<CommandDispatcher> create_strace_command();
 std::unique_ptr<CommandDispatcher> create_resume_command();
+std::unique_ptr<CommandDispatcher> create_ai_command();
 
 void CommandRegistry::register_command(std::unique_ptr<CommandDispatcher> cmd) {
     if (!cmd) {
@@ -138,6 +139,7 @@ void CommandRegistry::setup_all_commands() {
     register_command(create_verbose_command());
     register_command(create_strace_command());
     register_command(create_resume_command());
+    register_command(create_ai_command());
 }
 
 bool CommandRegistry::is_command_exist(const std::string& name) {
