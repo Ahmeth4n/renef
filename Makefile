@@ -413,6 +413,8 @@ CLIENT_ANDROID_SRCS := src/binr/renef/main.cpp \
                        src/librenef/cmd/cmd_hookgen.cpp \
                        src/librenef/cmd/cmd_strace.cpp \
                        src/librenef/cmd/cmd_plugin.cpp \
+                       src/librenef/cmd/cmd_resume.cpp \
+                       src/librenef/cmd/cmd_ai.cpp \
                        src/librenef/transport/server.cpp \
                        src/librenef/transport/uds.cpp \
                        src/librenef/transport/tcp.cpp \
