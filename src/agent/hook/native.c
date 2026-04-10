@@ -5,6 +5,8 @@
 
 #include <string.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <sys/mman.h>
 #include <pthread.h>
 #include <dlfcn.h>
@@ -203,25 +205,30 @@ static int got_scan_callback(struct dl_phdr_info *info, size_t size, void *data)
             LOGI("Found GOT entry for '%s' in %s at %p (current value: %p)",
                  ctx->sym_name, info->dlpi_name, got_addr, *got_addr);
 
-            if (change_page_protection(got_addr, PROT_READ | PROT_WRITE) != 0) {
-                LOGE("Failed to change GOT page protection for %p", got_addr);
-                continue;
-            }
-
             int idx = ctx->hook_info->data.plt_got.patched_count;
             if (idx >= 64) {
                 LOGW("Maximum GOT patches reached (64)");
-                return 1; // Stop iteration
+                return 1;
             }
 
-            // Save original and patch
             ctx->hook_info->data.plt_got.got_entries[idx] = got_addr;
             ctx->hook_info->data.plt_got.original_funcs[idx] = *got_addr;
             if (idx == 0) {
                 ctx->original_func = *got_addr;
             }
 
-            *got_addr = ctx->hook_func;
+            void* new_val = ctx->hook_func;
+            int got_fd = open("/proc/self/mem", O_RDWR);
+            if (got_fd >= 0) {
+                pwrite(got_fd, &new_val, sizeof(void*), (off_t)(uintptr_t)got_addr);
+                close(got_fd);
+            } else {
+                if (change_page_protection(got_addr, PROT_READ | PROT_WRITE) != 0) {
+                    LOGE("Failed to change GOT page protection for %p", got_addr);
+                    continue;
+                }
+                *got_addr = ctx->hook_func;
+            }
             ctx->hook_info->data.plt_got.patched_count++;
 
             LOGI("Patched GOT entry at %p: %p -> %p",
@@ -314,24 +321,38 @@ int install_trampoline_hook(void* target_func, void* hook_func, HookInfo* hook_i
 
     __builtin___clear_cache((char*)trampoline, (char*)((uintptr_t)trampoline + trampoline_size));
 
-    if (change_page_protection(target_func, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
-        LOGE("Failed to change target page protection");
-        munmap(trampoline, ALIGN_UP(trampoline_size, PAGE_SIZE));
-        cs_free(insn, insn_count);
-        return -1;
-    }
-
     uint32_t* target = (uint32_t*)target_func;
     hook_info->data.trampoline.original_insn[0] = target[0];
     if (bytes_to_copy > 4)  hook_info->data.trampoline.original_insn[1] = target[1];
     if (bytes_to_copy > 8)  hook_info->data.trampoline.original_insn[2] = target[2];
     if (bytes_to_copy > 12) hook_info->data.trampoline.original_insn[3] = target[3];
 
-    target[0] = 0x58000050;
-    target[1] = 0xd61f0200;
-    *(uint64_t*)(&target[2]) = (uint64_t)hook_func;
+    uint8_t hook_bytes[16];
+    uint32_t* hb = (uint32_t*)hook_bytes;
+    hb[0] = 0x58000050;
+    hb[1] = 0xd61f0200;
+    *(uint64_t*)(&hb[2]) = (uint64_t)hook_func;
 
-    LOGI("Wrote hook sequence at %p", target_func);
+    int mem_fd = open("/proc/self/mem", O_RDWR);
+    if (mem_fd >= 0) {
+        ssize_t written = pwrite(mem_fd, hook_bytes, 16, (off_t)(uintptr_t)target_func);
+        close(mem_fd);
+        if (written != 16) {
+            LOGE("pwrite failed (%zd): %s, falling back to mprotect", written, strerror(errno));
+            goto mprotect_fallback;
+        }
+        LOGI("Wrote hook via /proc/self/mem (no mprotect)");
+    } else {
+        mprotect_fallback:
+        if (change_page_protection(target_func, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
+            LOGE("Failed to change target page protection");
+            munmap(trampoline, ALIGN_UP(trampoline_size, PAGE_SIZE));
+            cs_free(insn, insn_count);
+            return -1;
+        }
+        memcpy(target_func, hook_bytes, 16);
+        LOGI("Wrote hook via mprotect fallback");
+    }
 
     __builtin___clear_cache((char*)target_func, (char*)((uintptr_t)target_func + 16));
 

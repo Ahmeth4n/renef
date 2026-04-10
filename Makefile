@@ -164,6 +164,7 @@ AGENT_SRCS := src/agent/core/agent.c \
               src/agent/lua/api_memory.c \
               src/agent/lua/api_thread.c \
               src/agent/lua/api_file.c \
+              src/agent/lua/api_os.c \
               src/agent/lua/api_jni.c \
               src/agent/lua/api_java.c \
               src/agent/strace/strace.c \

@@ -53,12 +53,45 @@ ssize_t SocketHelper::send_data(const void* data, size_t size, bool prefix_key) 
         return -1;
     }
 
+    ssize_t result;
     if (prefix_key && !session_key.empty()) {
         std::string full_data = session_key + " " + std::string((const char*)data, size);
-        return transport->send_data(full_data.c_str(), full_data.length());
+        result = transport->send_data(full_data.c_str(), full_data.length());
+    } else {
+        result = transport->send_data(data, size);
     }
 
-    return transport->send_data(data, size);
+    if (result < 0 && current_pid > 0) {
+        fprintf(stderr, "[SocketHelper] send failed, reconnecting to pid %d...\n", current_pid);
+        int pid = current_pid;
+        close_connection();
+
+        if (ensure_connection(pid) < 0) {
+            fprintf(stderr, "[SocketHelper] reconnect failed\n");
+            return -1;
+        }
+
+        if (!session_key.empty()) {
+            std::string con_cmd = "con " + session_key + "\n";
+            transport->send_data(con_cmd.c_str(), con_cmd.length());
+
+            char drain[256];
+            usleep(50000);
+            int old_flags = fcntl(transport->get_fd(), F_GETFL, 0);
+            fcntl(transport->get_fd(), F_SETFL, old_flags | O_NONBLOCK);
+            while (recv(transport->get_fd(), drain, sizeof(drain), 0) > 0) {}
+            fcntl(transport->get_fd(), F_SETFL, old_flags);
+        }
+
+        if (prefix_key && !session_key.empty()) {
+            std::string full_data = session_key + " " + std::string((const char*)data, size);
+            result = transport->send_data(full_data.c_str(), full_data.length());
+        } else {
+            result = transport->send_data(data, size);
+        }
+    }
+
+    return result;
 }
 
 ssize_t SocketHelper::receive_data(void* buffer, size_t size) {
