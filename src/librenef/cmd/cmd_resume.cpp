@@ -4,6 +4,8 @@
 #include <unistd.h>
 #include <signal.h>
 
+extern bool ptrace_resume(int pid);
+
 class ResumeCommand : public CommandDispatcher {
 public:
   std::string get_name() const override { return "resume"; }
@@ -22,7 +24,7 @@ public:
       return CommandResult(true, "No gated process");
     }
 
-    kill(gated, SIGCONT);
+    ptrace_resume(gated);
     CommandRegistry::instance().gated_pid = -1;
 
     char msg[128];

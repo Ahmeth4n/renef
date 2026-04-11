@@ -109,7 +109,8 @@ SERVER_SRCS := src/server/main.cpp \
                src/librenef/util/string.cpp \
                src/librenef/util/crypto.cpp \
                src/librenef/util/socket.cpp \
-               src/inject/injector.cpp
+               src/inject/injector.cpp \
+               src/inject/ptrace_injector.cpp
 
 SERVER_CXXFLAGS := -std=c++17 \
                    $(SERVER_OPT_FLAGS) \
@@ -412,6 +413,8 @@ CLIENT_ANDROID_SRCS := src/binr/renef/main.cpp \
                        src/librenef/cmd/cmd_memdump.cpp \
                        src/librenef/cmd/cmd_hookgen.cpp \
                        src/librenef/cmd/cmd_strace.cpp \
+                       src/librenef/cmd/cmd_resume.cpp \
+                       src/librenef/cmd/cmd_ai.cpp \
                        src/librenef/cmd/cmd_plugin.cpp \
                        src/librenef/transport/server.cpp \
                        src/librenef/transport/uds.cpp \
@@ -422,7 +425,8 @@ CLIENT_ANDROID_SRCS := src/binr/renef/main.cpp \
                        src/librenef/util/server_connection.cpp \
                        src/librenef/plugin/plugin.cpp \
                        src/librenef/binding/renef.cpp \
-                       src/inject/injector.cpp
+                       src/inject/injector.cpp \
+                       src/inject/ptrace_injector.cpp
 
 CLIENT_ANDROID_CXXFLAGS := -std=c++17 \
                            $(SERVER_OPT_FLAGS) \

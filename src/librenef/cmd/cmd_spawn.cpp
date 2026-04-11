@@ -12,6 +12,8 @@
 #include <vector>
 #include <chrono>
 #include <signal.h>
+#include <sys/ioctl.h>
+#include <linux/sockios.h>
 
 #define RENEF_PAYLOAD_PATH "/data/local/tmp/libagent.so"
 
@@ -79,6 +81,8 @@ static SpawnParams parse_spawn_params(const char *cmd_buffer, size_t cmd_size) {
 }
 
 extern bool inject(int pid, const char *so_path);
+extern bool ptrace_inject(int pid, const char *so_path);
+extern bool ptrace_resume(int pid);
 
 class SpawnCommand : public CommandDispatcher {
 public:
@@ -158,13 +162,22 @@ public:
               << std::chrono::duration_cast<std::chrono::milliseconds>(after_pid - spawn_start).count()
               << "ms (pid=" << pid << ")" << std::endl;
 
-    bool is_injected = inject(pid, RENEF_PAYLOAD_PATH);
+    bool is_injected;
+    if (params.pause) {
+      // Spawn gate: use ptrace-based injection. This STOPS the target
+      // main thread before any app code runs, injects the agent, and
+      // leaves the target stopped. Main thread won't reach onCreate until
+      // we resume via ptrace_resume() later.
+      is_injected = ptrace_inject(pid, RENEF_PAYLOAD_PATH);
+    } else {
+      // Normal injection path: signal-based, no ptrace.
+      is_injected = inject(pid, RENEF_PAYLOAD_PATH);
+    }
 
     char response[64];
     if (is_injected) {
 
       // Close old agent connection BEFORE establishing new one
-      // (set_current_pid closes SocketHelper if PID changed)
       CommandRegistry::instance().set_current_pid(pid);
 
       int con_pid = sock.ensure_connection(pid);
@@ -175,14 +188,11 @@ public:
       sock.set_session_key(session_key);
 
       if (params.pause) {
-        // Spawn gate: freeze process AFTER agent is connected.
-        // The agent socket is open and buffered by kernel.
-        // Next exec command will SIGCONT before polling for response,
-        // so the agent reads buffered script data and installs hooks
-        // before the main thread reaches onCreate.
-        kill(pid, SIGSTOP);
+        // Target is still stopped via ptrace. Mark it gated so the next
+        // exec/load command will call ptrace_resume() after the script
+        // is delivered.
         CommandRegistry::instance().gated_pid = pid;
-        std::cerr << "  [spawn-gate] process frozen (pid=" << pid
+        std::cerr << "  [spawn-gate] target ptrace-stopped (pid=" << pid
                   << "), will resume on first exec" << std::endl;
       }
 
