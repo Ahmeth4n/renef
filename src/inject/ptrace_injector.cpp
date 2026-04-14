@@ -220,14 +220,7 @@ bool ptrace_inject(int pid, const char *so_path) {
     fprintf(stderr, "[ptrace-inject] linker64: %s @ 0x%lx\n", linker_disk_path, linker_base);
     fprintf(stderr, "[ptrace-inject] __loader_dlopen @ 0x%lx\n", dlopen_addr);
 
-    // Find libc base to use as fake caller_addr (for namespace check)
-    uintptr_t libc_base = find_library_base(pid, "libc.so");
-    if (!libc_base) {
-        fprintf(stderr, "[ptrace-inject] libc.so not found in target\n");
-        ptrace(PTRACE_DETACH, pid, 0, 0);
-        return false;
-    }
-    uintptr_t caller_addr = libc_base + 0x1000; // any address inside libc
+    uintptr_t caller_addr = linker_base + 0x1000;
 
     // Save original regs
     arm64_regs orig_regs;
