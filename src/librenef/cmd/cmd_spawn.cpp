@@ -13,7 +13,6 @@
 #include <chrono>
 #include <signal.h>
 #include <sys/ioctl.h>
-#include <linux/sockios.h>
 
 #define RENEF_PAYLOAD_PATH "/data/local/tmp/libagent.so"
 

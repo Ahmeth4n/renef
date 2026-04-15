@@ -24,14 +24,48 @@
 #include <cstdio>
 #include <cstring>
 #include <fcntl.h>
-#include <sys/ptrace.h>
 #include <sys/uio.h>
-#include <sys/user.h>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
 #include <vector>
+
+#ifdef __linux__
 #include <linux/elf.h>
+#include <sys/ptrace.h>
+#include <sys/user.h>
+#else
+// macOS host build — provide Linux ptrace constants so the code compiles.
+// These match the values from <linux/ptrace.h> and <linux/elf.h>.
+#include <sys/ptrace.h>
+
+#ifndef NT_PRSTATUS
+#define NT_PRSTATUS 1
+#endif
+#ifndef PTRACE_ATTACH
+#define PTRACE_ATTACH 16
+#endif
+#ifndef PTRACE_DETACH
+#define PTRACE_DETACH 17
+#endif
+#ifndef PTRACE_CONT
+#define PTRACE_CONT 7
+#endif
+#ifndef PTRACE_GETREGSET
+#define PTRACE_GETREGSET 0x4204
+#endif
+#ifndef PTRACE_SETREGSET
+#define PTRACE_SETREGSET 0x4205
+#endif
+
+// macOS ptrace has signature: int ptrace(int, pid_t, caddr_t, int)
+// Linux ptrace has signature: long ptrace(enum, pid_t, void*, void*)
+// Wrap to match Linux calling convention used throughout this file.
+static inline long linux_ptrace(int request, pid_t pid, void *addr, void *data) {
+    return ptrace(request, pid, (caddr_t)addr, (int)(intptr_t)data);
+}
+#define ptrace(req, pid, addr, data) linux_ptrace(req, pid, (void*)(intptr_t)(addr), (void*)(intptr_t)(data))
+#endif // __linux__
 
 // user_regs_struct for ARM64
 struct arm64_regs {
@@ -178,10 +212,14 @@ bool ptrace_inject(int pid, const char *so_path) {
     }
     fprintf(stderr, "[ptrace-inject] libdl: %s @ 0x%lx\n", libdl_disk_path, libdl_base);
 
-    // Use __loader_dlopen from linker64 to bypass namespace check.
-    // Signature: void* __loader_dlopen(const char* filename, int flags, const void* caller_addr);
-    // Find linker64 base in target process
-    rewind(f);
+    // Find dlerror for diagnostics
+    uintptr_t dlerror_offset = find_symbol(libdl_disk_path, "dlerror");
+    uintptr_t dlerror_addr = dlerror_offset ? (libdl_base + dlerror_offset) : 0;
+
+    // Find __loader_dlopen from linker64.
+    // We use the 3-arg version so we can control caller_addr for namespace
+    // resolution. The 2-arg dlopen stub derives caller from LR, which is 0
+    // in our ptrace call setup — causing the linker to use the wrong namespace.
     f = fopen(maps_path, "r");
     uintptr_t linker_base = 0;
     char linker_disk_path[256] = "";
@@ -206,21 +244,18 @@ bool ptrace_inject(int pid, const char *so_path) {
     }
     if (f) fclose(f);
     if (!linker_base || !linker_disk_path[0]) {
-        fprintf(stderr, "[ptrace-inject] linker64 not found in target maps\n");
+        fprintf(stderr, "[ptrace-inject] linker64 not found\n");
         ptrace(PTRACE_DETACH, pid, 0, 0);
         return false;
     }
     uintptr_t loader_dlopen_offset = find_symbol(linker_disk_path, "__loader_dlopen");
     if (!loader_dlopen_offset) {
-        fprintf(stderr, "[ptrace-inject] __loader_dlopen not found in linker64\n");
+        fprintf(stderr, "[ptrace-inject] __loader_dlopen not found\n");
         ptrace(PTRACE_DETACH, pid, 0, 0);
         return false;
     }
     uintptr_t dlopen_addr = linker_base + loader_dlopen_offset;
-    fprintf(stderr, "[ptrace-inject] linker64: %s @ 0x%lx\n", linker_disk_path, linker_base);
     fprintf(stderr, "[ptrace-inject] __loader_dlopen @ 0x%lx\n", dlopen_addr);
-
-    uintptr_t caller_addr = linker_base + 0x1000;
 
     // Save original regs
     arm64_regs orig_regs;
@@ -229,21 +264,83 @@ bool ptrace_inject(int pid, const char *so_path) {
         return false;
     }
 
-    // Write path to target's stack (below current sp)
+    // Write path to a known RW page: libc's timezone variable.
+    // Writing below the stack (sp - 512) can land on unmapped/guard pages
+    // in freshly-forked zygote children. The signal-based injector uses
+    // timezone for the same reason — it's always mapped RW in .bss.
+    uintptr_t libc_base = find_library_base(pid, "libc.so");
+    if (!libc_base) {
+        fprintf(stderr, "[ptrace-inject] libc.so not found\n");
+        ptrace(PTRACE_DETACH, pid, 0, 0);
+        return false;
+    }
+
+    // Resolve libc disk path for symbol lookup
+    f = fopen(maps_path, "r");
+    char libc_disk_path[256] = "";
+    while (f && fgets(line, sizeof(line), f)) {
+        if (strstr(line, "libc.so") && strstr(line, "r--p")) {
+            const char* path_start = strchr(line, '/');
+            if (path_start) {
+                size_t len = strlen(path_start);
+                while (len > 0 && (path_start[len-1] == '\n' || path_start[len-1] == ' '))
+                    len--;
+                if (len < sizeof(libc_disk_path)) {
+                    memcpy(libc_disk_path, path_start, len);
+                    libc_disk_path[len] = 0;
+                }
+            }
+            break;
+        }
+    }
+    if (f) fclose(f);
+
+    // Use timezone (.bss, RW) as scratch space for the path string
+    uintptr_t timezone_offset = find_symbol(libc_disk_path, "timezone");
+    uintptr_t path_addr = 0;
+    std::vector<uint8_t> path_backup;
+
+    if (timezone_offset) {
+        path_addr = libc_base + timezone_offset;
+        // Back up original value so we can restore it
+        path_backup = read_memory(pid, path_addr, 64);
+        fprintf(stderr, "[ptrace-inject] using timezone @ 0x%lx for path scratch\n", path_addr);
+    } else {
+        // Fallback: use stack
+        path_addr = (orig_regs.sp - 512) & ~0xFULL;
+        fprintf(stderr, "[ptrace-inject] timezone not found, using stack @ 0x%lx\n", path_addr);
+    }
+
     size_t path_len = strlen(so_path) + 1;
-    uintptr_t path_addr = (orig_regs.sp - 512) & ~0xFULL;
     std::vector<uint8_t> path_bytes(so_path, so_path + path_len);
     if (!write_memory(pid, path_addr, path_bytes)) {
-        fprintf(stderr, "[ptrace-inject] failed to write path to target stack\n");
+        fprintf(stderr, "[ptrace-inject] failed to write path string\n");
         ptrace_set_regs(pid, &orig_regs);
         ptrace(PTRACE_DETACH, pid, 0, 0);
         return false;
     }
 
-    // Call __loader_dlopen(path, RTLD_NOW=2, caller_addr=libc)
+    // Verify the path was written correctly
+    auto verify = read_memory(pid, path_addr, path_len);
+    if (verify.empty() || memcmp(verify.data(), so_path, path_len) != 0) {
+        fprintf(stderr, "[ptrace-inject] path verify FAILED\n");
+        if (!path_backup.empty()) write_memory(pid, path_addr, path_backup);
+        ptrace(PTRACE_DETACH, pid, 0, 0);
+        return false;
+    }
+    fprintf(stderr, "[ptrace-inject] path verified @ 0x%lx: %s\n", path_addr, so_path);
+
+    // caller_addr for __loader_dlopen determines the namespace.
+    // On Android 11+, "classloader-namespace-shared" is the app namespace.
+    // Using libc_base puts us in the default/platform namespace, which CAN
+    // load from /data/local/tmp/. The app's classloader namespace cannot.
+    uintptr_t caller_addr = libc_base;
+
+    // Call __loader_dlopen(path, RTLD_NOW=2, caller_addr)
     arm64_regs saved_regs;
     if (!ptrace_call_function(pid, &saved_regs, dlopen_addr, path_addr, 2, caller_addr)) {
         fprintf(stderr, "[ptrace-inject] dlopen call failed\n");
+        if (!path_backup.empty()) write_memory(pid, path_addr, path_backup);
         ptrace_set_regs(pid, &orig_regs);
         ptrace(PTRACE_DETACH, pid, 0, 0);
         return false;
@@ -252,12 +349,31 @@ bool ptrace_inject(int pid, const char *so_path) {
     // Read return value (dlopen handle) from x0
     arm64_regs ret_regs;
     if (!ptrace_get_regs(pid, &ret_regs)) {
+        if (!path_backup.empty()) write_memory(pid, path_addr, path_backup);
         ptrace_set_regs(pid, &orig_regs);
         ptrace(PTRACE_DETACH, pid, 0, 0);
         return false;
     }
     uint64_t handle = ret_regs.x[0];
-    fprintf(stderr, "[ptrace-inject] dlopen returned 0x%lx\n", handle);
+    fprintf(stderr, "[ptrace-inject] dlopen returned 0x%llx\n", (unsigned long long)handle);
+
+    // If dlopen failed, call dlerror() for diagnostics
+    if (handle == 0 && dlerror_addr) {
+        arm64_regs dlerr_regs;
+        if (ptrace_call_function(pid, &dlerr_regs, dlerror_addr, 0, 0)) {
+            arm64_regs after_dlerr;
+            if (ptrace_get_regs(pid, &after_dlerr) && after_dlerr.x[0] != 0) {
+                auto err_bytes = read_memory(pid, after_dlerr.x[0], 256);
+                if (!err_bytes.empty()) {
+                    err_bytes.push_back(0);
+                    fprintf(stderr, "[ptrace-inject] dlerror: %s\n", (const char*)err_bytes.data());
+                }
+            }
+        }
+    }
+
+    // Restore timezone scratch space
+    if (!path_backup.empty()) write_memory(pid, path_addr, path_backup);
 
     // Restore original registers
     if (!ptrace_set_regs(pid, &orig_regs)) {
