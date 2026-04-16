@@ -119,6 +119,7 @@ add_library(renef_core STATIC
 
     # Injector
     src/inject/injector.cpp
+    src/inject/ptrace_injector.cpp
 
     # Plugin system
     src/librenef/plugin/plugin.cpp

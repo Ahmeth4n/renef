@@ -487,10 +487,28 @@ bool inject(int pid, const char *so_path) {
     int timeout_counter = 0;
     const int MAX_TIMEOUT = 30000;
 
+    // Try multiple signals to maximize chance of hitting malloc:
+    // SIGUSR1 (10): ART GC trigger — works for app processes
+    // SIGQUIT (3):  ART thread dump — calls malloc heavily, works for Zygote
     char kill_cmd[256];
     snprintf(kill_cmd, sizeof(kill_cmd), "kill -10 %d 2>/dev/null", pid);
     system(kill_cmd);
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    snprintf(kill_cmd, sizeof(kill_cmd), "kill -3 %d 2>/dev/null", pid);
+    system(kill_cmd);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+    // If target is Zygote (has only 1 thread and is in ppoll), launch a cold
+    // app in parallel to force Zygote to process a fork request and call malloc.
+    char check_cmd[256];
+    snprintf(check_cmd, sizeof(check_cmd),
+             "cat /proc/%d/status 2>/dev/null | grep -q 'Threads:\\s*1' && "
+             "cat /proc/%d/comm 2>/dev/null | grep -q zygote", pid, pid);
+    if (system(check_cmd) == 0) {
+      std::cout << "  → Target is Zygote, forcing fork via monkey...\n";
+      // Launch any app via monkey to force Zygote to fork (and call malloc)
+      system("monkey -p com.google.android.contacts 1 >/dev/null 2>&1 &");
+    }
     std::cout << "  → Trigger signals sent\n";
 
     bool dlopen_ok = false;

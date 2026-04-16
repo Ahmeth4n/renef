@@ -12,6 +12,8 @@
 #include <sys/socket.h>
 #include <signal.h>
 
+extern bool ptrace_resume(int pid);
+
 static std::string read_file(const char* path) {
     FILE* f = fopen(path, "rb");
     if (!f) return "";
@@ -71,13 +73,8 @@ public:
         std::string command = "hexexec " + hex + "\n";
         socket_helper.send_data(command.c_str(), command.length());
 
-        // Spawn gate: resume frozen process after script data is buffered
         int gated = CommandRegistry::instance().gated_pid;
-        if (gated > 0 && gated == pid) {
-            fprintf(stderr, "[spawn-gate] Resuming gated process (pid=%d)\n", gated);
-            kill(gated, SIGCONT);
-            CommandRegistry::instance().gated_pid = -1;
-        }
+        bool need_resume = (gated > 0 && gated == pid);
 
         int flags = fcntl(sock, F_GETFL, 0);
         fcntl(sock, F_SETFL, flags | O_NONBLOCK);
@@ -108,6 +105,12 @@ public:
             } else {
                 break;
             }
+        }
+
+        if (need_resume) {
+            fprintf(stderr, "[spawn-gate] Script delivered, resuming (pid=%d)\n", gated);
+            ptrace_resume(gated);
+            CommandRegistry::instance().gated_pid = -1;
         }
 
         fcntl(sock, F_SETFL, flags);
