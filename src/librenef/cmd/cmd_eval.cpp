@@ -53,17 +53,8 @@ public:
         ssize_t sent = socket_helper.send_data(command.c_str(), command.length());
         fprintf(stderr, "[DEBUG exec] Actually sent %zd bytes\n", sent);
 
-        // Spawn gate: if process was frozen by spawn (ptrace-stopped), resume
-        // it now. The exec data has already been sent to the agent's command
-        // thread (which runs independently of the ptrace-stopped main thread).
-        // We detach ptrace so the main thread can continue to onCreate, which
-        // will now hit the hooks the script installed.
         int gated = CommandRegistry::instance().gated_pid;
-        if (gated > 0 && gated == pid) {
-            fprintf(stderr, "[spawn-gate] Resuming gated process (pid=%d)\n", gated);
-            ptrace_resume(gated);
-            CommandRegistry::instance().gated_pid = -1;
-        }
+        bool need_resume = (gated > 0 && gated == pid);
 
         int flags = fcntl(sock, F_GETFL, 0);
         fcntl(sock, F_SETFL, flags | O_NONBLOCK);
@@ -71,7 +62,7 @@ public:
         char buffer[4096];
         bool script_done = false;
         int timeout_count = 0;
-        const int max_timeout = 50;
+        const int max_timeout = need_resume ? 5 : 50;
         int iterations = 0;
         int total_bytes = 0;
 
@@ -106,6 +97,13 @@ public:
 
         fprintf(stderr, "[eval-debug] loop done: iterations=%d, total_bytes=%d, script_done=%d, timeout_count=%d\n",
                 iterations, total_bytes, script_done, timeout_count);
+
+        if (need_resume) {
+            fprintf(stderr, "[spawn-gate] Script delivered (%d bytes), resuming (pid=%d)\n",
+                    total_bytes, gated);
+            ptrace_resume(gated);
+            CommandRegistry::instance().gated_pid = -1;
+        }
 
         fcntl(sock, F_SETFL, flags);
 

@@ -9,10 +9,16 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <pthread.h>
+#include <sched.h>
 #include <dlfcn.h>
 #include <link.h>
 #include <elf.h>
 #include <capstone/capstone.h>
+
+// Reentrancy guard: prevents infinite recursion when a hooked function
+// (e.g. __android_log_print, strlen, fopen) is called from inside the
+// hook handler itself (via LOGI, verbose_log, etc.)
+static __thread int g_hook_reentrant = 0;
 #include <capstone/arm64.h>
 
 HookInfo g_hooks[MAX_HOOKS];
@@ -498,13 +504,118 @@ void* create_hook_thunk(int hook_index) {
     return thunk;
 }
 
+// ============================================================
+// Deferred hooks: installed automatically when a library loads
+// ============================================================
+
+typedef struct {
+    char lib_name[128];
+    uintptr_t offset;
+    int onEnter_ref;
+    int onLeave_ref;
+    char caller_lib[128];
+    bool active;
+} PendingHook;
+
+#define MAX_PENDING_HOOKS 16
+static PendingHook g_pending_hooks[MAX_PENDING_HOOKS];
+static int g_pending_hook_count = 0;
+static bool g_dlopen_hooked = false;
+
+static void try_install_pending_hooks(void);
+
+static void* deferred_poll_thread(void* arg) {
+    (void)arg;
+    LOGI("[deferred] Poll thread started (busy-wait for lib load)");
+
+    // Busy-wait poll: no sleep between iterations. Maximizes chances of
+    // installing the hook between dlopen() returning and the first call
+    // to the hooked function. sched_yield() lets other threads run but
+    // we resume polling as soon as the scheduler gives us CPU.
+    while (1) {
+        bool all_done = true;
+        for (int i = 0; i < g_pending_hook_count; i++) {
+            if (g_pending_hooks[i].active) {
+                all_done = false;
+                break;
+            }
+        }
+        if (all_done) break;
+
+        try_install_pending_hooks();
+        sched_yield(); // give other threads a chance, but no sleep
+    }
+
+    LOGI("[deferred] All pending hooks installed, poll thread exiting");
+    return NULL;
+}
+
+static void start_deferred_poll(void) {
+    if (g_dlopen_hooked) return;
+    g_dlopen_hooked = true;
+
+    pthread_t tid;
+    pthread_create(&tid, NULL, deferred_poll_thread, NULL);
+    pthread_detach(tid);
+    LOGI("[deferred] Started library load watcher (busy-wait)");
+}
+
+static void try_install_pending_hooks(void) {
+    for (int i = 0; i < g_pending_hook_count; i++) {
+        PendingHook* ph = &g_pending_hooks[i];
+        if (!ph->active) continue;
+
+        uintptr_t base = (uintptr_t)find_library_base(ph->lib_name);
+        if (base == 0) continue;
+
+        LOGI("[deferred] Library %s now loaded at 0x%lx, installing hook at +0x%lx",
+             ph->lib_name, base, ph->offset);
+
+        // Install the hook now
+        ph->active = false;
+        install_lua_hook(ph->lib_name, ph->offset,
+                        ph->onEnter_ref, ph->onLeave_ref,
+                        ph->caller_lib[0] ? ph->caller_lib : NULL);
+    }
+}
+
+static bool add_pending_hook(const char* lib_name, uintptr_t offset,
+                             int onEnter_ref, int onLeave_ref,
+                             const char* caller_lib) {
+    if (g_pending_hook_count >= MAX_PENDING_HOOKS) {
+        LOGE("[deferred] Maximum pending hooks reached");
+        return false;
+    }
+
+    PendingHook* ph = &g_pending_hooks[g_pending_hook_count++];
+    strncpy(ph->lib_name, lib_name, sizeof(ph->lib_name) - 1);
+    ph->offset = offset;
+    ph->onEnter_ref = onEnter_ref;
+    ph->onLeave_ref = onLeave_ref;
+    if (caller_lib) {
+        strncpy(ph->caller_lib, caller_lib, sizeof(ph->caller_lib) - 1);
+    } else {
+        ph->caller_lib[0] = '\0';
+    }
+    ph->active = true;
+
+    // Start polling for library loads
+    start_deferred_poll();
+
+    LOGI("[deferred] Pending hook registered: %s+0x%lx (will install on load)",
+         lib_name, offset);
+    return true;
+}
+
+// ============================================================
+
 bool install_lua_hook(const char* lib_name, uintptr_t offset, int onEnter_ref, int onLeave_ref, const char* caller_lib) {
     LOGI("Installing Lua hook: %s+0x%lx", lib_name, offset);
 
     uintptr_t base = (uintptr_t)find_library_base(lib_name);
     if (base == 0) {
-        LOGE("Library not found: %s", lib_name);
-        return false;
+        LOGI("Library %s not loaded yet, deferring hook", lib_name);
+        return add_pending_hook(lib_name, offset, onEnter_ref, onLeave_ref, caller_lib);
     }
 
     uintptr_t target_addr = base + offset;
@@ -552,14 +663,27 @@ bool install_lua_hook(const char* lib_name, uintptr_t offset, int onEnter_ref, i
     return true;
 }
 
+// Check reentrancy and return trampoline address for bypass.
+// Returns NULL if not reentrant (normal path), or trampoline addr to skip handler.
+void* check_hook_reentrant(int hook_index) {
+    if (g_hook_reentrant) {
+        // Reentrant: return trampoline so handler can be bypassed
+        g_current_hook_index = hook_index;
+        return get_current_trampoline();
+    }
+    g_hook_reentrant = 1;
+    return NULL;
+}
+
 __attribute__((naked)) void generic_hook_handler(void) {
     __asm__ __volatile__(
         "stp x29, x30, [sp, #-16]!\n"
         "mov x29, sp\n"
-        "sub sp, sp, #288\n"  
+        "sub sp, sp, #288\n"
 
         "str x17, [sp, #256]\n"
 
+        // Save all regs FIRST (before any C call)
         "stp x0, x1, [sp, #0]\n"
         "stp x2, x3, [sp, #16]\n"
         "stp x4, x5, [sp, #32]\n"
@@ -576,6 +700,12 @@ __attribute__((naked)) void generic_hook_handler(void) {
         "stp x26, x27, [sp, #208]\n"
         "stp x28, xzr, [sp, #224]\n"
 
+        // Check reentrancy BEFORE any logging
+        "ldr x0, [sp, #256]\n"       // x0 = hook_index
+        "bl check_hook_reentrant\n"
+        "cbnz x0, .Lreentrant_bypass\n" // if non-NULL, skip handler
+
+        // Normal path: run hook handler
         "ldr x0, [sp, #256]\n"
         "bl set_current_hook_index\n"
 
@@ -583,7 +713,7 @@ __attribute__((naked)) void generic_hook_handler(void) {
         "bl hook_logger\n"
 
         "bl get_current_trampoline\n"
-        "str x0, [sp, #264]\n"  
+        "str x0, [sp, #264]\n"
 
         "ldp x0, x1, [sp, #0]\n"
         "ldp x2, x3, [sp, #16]\n"
@@ -600,12 +730,27 @@ __attribute__((naked)) void generic_hook_handler(void) {
         "add sp, sp, #288\n"
         "ldp x29, x30, [sp], #16\n"
         "ret\n"
+
+        // Reentrant bypass: skip handler, go straight to trampoline
+        ".Lreentrant_bypass:\n"
+        "str x0, [sp, #264]\n"       // store trampoline addr
+
+        "ldp x0, x1, [sp, #0]\n"
+        "ldp x2, x3, [sp, #16]\n"
+        "ldp x4, x5, [sp, #32]\n"
+        "ldp x6, x7, [sp, #48]\n"
+        "ldp x8, x9, [sp, #64]\n"
+
+        "ldr x16, [sp, #264]\n"
+
+        "add sp, sp, #288\n"
+        "ldp x29, x30, [sp], #16\n"
+        "br x16\n"                    // tail-call trampoline (no blr — don't return here)
     );
 }
 
 void set_current_hook_index(int index) {
     g_current_hook_index = index;
-    LOGI("Set current hook index to %d", index);
 }
 
 void hook_logger(uint64_t* saved_regs) {
@@ -687,6 +832,7 @@ void hook_logger(uint64_t* saved_regs) {
 
     g_hook_caller_fp = 0;
     g_hook_caller_lr = 0;
+    // Note: don't reset g_hook_reentrant here — log_return_value still needs it
 }
 
 uint64_t log_return_value(uint64_t ret_val) {
@@ -752,6 +898,7 @@ uint64_t log_return_value(uint64_t ret_val) {
 
     g_hook_caller_fp = 0;
     g_hook_caller_lr = 0;
+    g_hook_reentrant = 0;  // Reset guard at the very end of hook processing
     return ret_val;
 }
 

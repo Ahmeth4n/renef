@@ -13,6 +13,12 @@
 #include <chrono>
 #include <signal.h>
 #include <sys/ioctl.h>
+#include <sys/ptrace.h>
+#include <sys/wait.h>
+
+#ifndef PTRACE_ATTACH
+#define PTRACE_ATTACH 16
+#endif
 
 #define RENEF_PAYLOAD_PATH "/data/local/tmp/libagent.so"
 
@@ -163,13 +169,11 @@ public:
 
     bool is_injected;
     if (params.pause) {
-      // Spawn gate: use ptrace-based injection. This STOPS the target
-      // main thread before any app code runs, injects the agent, and
-      // leaves the target stopped. Main thread won't reach onCreate until
-      // we resume via ptrace_resume() later.
+      // ptrace_inject: stops main thread before app code, loads agent.
+      // Combined with deferred hooks, this catches the first call to any
+      // function — even in not-yet-loaded libraries.
       is_injected = ptrace_inject(pid, RENEF_PAYLOAD_PATH);
     } else {
-      // Normal injection path: signal-based, no ptrace.
       is_injected = inject(pid, RENEF_PAYLOAD_PATH);
     }
 
@@ -187,12 +191,13 @@ public:
       sock.set_session_key(session_key);
 
       if (params.pause) {
-        // Target is still stopped via ptrace. Mark it gated so the next
-        // exec/load command will call ptrace_resume() after the script
-        // is delivered.
+        // Main thread is ptrace-stopped. Script will be sent next.
+        // If target lib isn't loaded yet, agent defers the hook and polls
+        // for it. On ptrace_resume, main thread runs, lib loads, poll
+        // catches it, hook installed before first call.
         CommandRegistry::instance().gated_pid = pid;
-        std::cerr << "  [spawn-gate] target ptrace-stopped (pid=" << pid
-                  << "), will resume on first exec" << std::endl;
+        std::cerr << "  [spawn-gate] main thread frozen (pid=" << pid
+                  << "), will resume on first exec/load" << std::endl;
       }
 
       snprintf(response, sizeof(response), "OK %d\n", pid);

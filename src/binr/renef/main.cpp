@@ -845,8 +845,12 @@ std::string send_command(const std::string& command) {
         }
     }
 
-    // Drain any stale data from previous streaming commands (strace, watch, etc.)
-    {
+    bool streaming = is_streaming_command(command);
+
+    // Drain any stale data from previous commands — but NOT when starting
+    // a streaming command (watch/strace). Hook output may arrive between
+    // script execution and watch startup; draining would lose it.
+    if (!streaming) {
         int fd = conn.get_socket_fd();
         if (fd >= 0) {
             char drain[4096];
@@ -857,7 +861,6 @@ std::string send_command(const std::string& command) {
         }
     }
 
-    bool streaming = is_streaming_command(command);
     if (streaming) {
         std::cout << "(Press 'q' to exit watch mode)\n";
     }
