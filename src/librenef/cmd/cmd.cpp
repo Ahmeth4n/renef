@@ -113,7 +113,10 @@ CommandResult CommandRegistry::dispatch(int client_fd, const char* cmd_buffer, s
         return CommandResult(false, "Unknown command: " + cmd_name);
     }
 
-    if (sock.is_connected()) {
+    // Drain stale agent output before most commands. Skip for watch —
+    // the hook output we want to display may already be in the buffer
+    // (hook fired between exec return and watch start).
+    if (sock.is_connected() && cmd_name != "watch") {
         sock.drain_buffer();
     }
 

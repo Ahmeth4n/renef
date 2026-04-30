@@ -39,7 +39,29 @@ public:
             return CommandResult(false, "Socket connection failed");
         }
 
-        std::cout << "[WATCH] Starting watch on agent socket fd=" << sock << ", client_fd=" << client_fd << "\n";
+        fprintf(stderr, "[WATCH] Starting watch on agent socket fd=%d, client_fd=%d\n", sock, client_fd);
+
+        // Drain any data already in socket buffer (e.g. hook output that
+        // fired between script execution and watch startup) and forward to client
+        {
+            int old_flags = fcntl(sock, F_GETFL, 0);
+            fcntl(sock, F_SETFL, old_flags | O_NONBLOCK);
+            char buf[4096];
+            ssize_t drained_total = 0;
+            while (true) {
+                ssize_t n = recv(sock, buf, sizeof(buf), 0);
+                if (n > 0) {
+                    write(client_fd, buf, n);
+                    drained_total += n;
+                } else {
+                    break;
+                }
+            }
+            fcntl(sock, F_SETFL, old_flags);
+            if (drained_total > 0) {
+                fprintf(stderr, "[WATCH] forwarded %zd bytes of buffered hook output\n", drained_total);
+            }
+        }
 
         const char* start_msg = "Watching hook output... (waiting for hooks to trigger)\n";
         write(client_fd, start_msg, strlen(start_msg));
@@ -53,20 +75,32 @@ public:
         char buffer[4096];
         bool running = true;
 
+        int poll_count = 0;
         while (running) {
             struct pollfd pfds[2];
             pfds[0] = {sock, POLLIN, 0};
             pfds[1] = {client_fd, POLLIN, 0};
 
             int ret = poll(pfds, 2, 1000);
+            poll_count++;
+            if (poll_count % 5 == 0) {
+                // Also try a non-blocking recv to see if there's data poll missed
+                char peek_buf[64];
+                ssize_t peek = recv(sock, peek_buf, sizeof(peek_buf), MSG_PEEK | MSG_DONTWAIT);
+                fprintf(stderr, "[WATCH] poll iter=%d, ret=%d, sock_rev=0x%x, client_rev=0x%x, peek=%zd\n",
+                        poll_count, ret, pfds[0].revents, pfds[1].revents, peek);
+                if (peek > 0) {
+                    fprintf(stderr, "[WATCH] peek data: %.*s\n", (int)peek, peek_buf);
+                }
+            }
 
             if (ret > 0) {
                 if (pfds[0].revents & POLLIN) {
                     ssize_t n = recv(sock, buffer, sizeof(buffer) - 1, 0);
-                    std::cout << "[WATCH] recv from agent: n=" << n << "\n";
+                    fprintf(stderr, "[WATCH] recv from agent: n=%zd\n", n);
                     if (n > 0) {
                         buffer[n] = '\0';
-                        std::cout << "[WATCH] Got data: " << buffer << "\n";
+                        fprintf(stderr, "[WATCH] Forwarding to client: %.*s\n", (int)n, buffer);
                         write(client_fd, buffer, n);
                     } else if (n == 0) {
                         const char* msg = "Agent disconnected\n";

@@ -10,6 +10,8 @@
 #include <cstring>
 #include <signal.h>
 
+extern bool ptrace_resume(int pid);
+
 class Eval : public CommandDispatcher {
 public:
     std::string get_name() const override {
@@ -51,16 +53,8 @@ public:
         ssize_t sent = socket_helper.send_data(command.c_str(), command.length());
         fprintf(stderr, "[DEBUG exec] Actually sent %zd bytes\n", sent);
 
-        // Spawn gate: if process was frozen by spawn, resume it now.
-        // The exec data is already buffered in the kernel socket buffer,
-        // so the agent will read and install hooks before the main thread
-        // reaches onCreate.
         int gated = CommandRegistry::instance().gated_pid;
-        if (gated > 0 && gated == pid) {
-            fprintf(stderr, "[spawn-gate] Resuming gated process (pid=%d)\n", gated);
-            kill(gated, SIGCONT);
-            CommandRegistry::instance().gated_pid = -1;
-        }
+        bool need_resume = (gated > 0 && gated == pid);
 
         int flags = fcntl(sock, F_GETFL, 0);
         fcntl(sock, F_SETFL, flags | O_NONBLOCK);
@@ -68,16 +62,21 @@ public:
         char buffer[4096];
         bool script_done = false;
         int timeout_count = 0;
-        const int max_timeout = 50;
+        const int max_timeout = need_resume ? 5 : 50;
+        int iterations = 0;
+        int total_bytes = 0;
 
         while (!script_done && timeout_count < max_timeout) {
             struct pollfd pfd = {sock, POLLIN, 0};
             int ret = poll(&pfd, 1, 100);
+            iterations++;
 
             if (ret > 0 && (pfd.revents & POLLIN)) {
                 ssize_t n = recv(sock, buffer, sizeof(buffer) - 1, 0);
                 if (n > 0) {
                     buffer[n] = '\0';
+                    total_bytes += n;
+                    fprintf(stderr, "[eval-debug] recv %zd bytes (total %d)\n", n, total_bytes);
                     write(client_fd, buffer, n);
 
                     if (strstr(buffer, "\342\234\223 Lua executed") || strstr(buffer, "\342\234\227 Lua")) {
@@ -85,13 +84,25 @@ public:
                     }
                     timeout_count = 0;
                 } else if (n == 0) {
+                    fprintf(stderr, "[eval-debug] recv returned 0 (connection closed)\n");
                     break;
                 }
             } else if (ret == 0) {
                 timeout_count++;
             } else {
+                fprintf(stderr, "[eval-debug] poll error: %s\n", strerror(errno));
                 break;
             }
+        }
+
+        fprintf(stderr, "[eval-debug] loop done: iterations=%d, total_bytes=%d, script_done=%d, timeout_count=%d\n",
+                iterations, total_bytes, script_done, timeout_count);
+
+        if (need_resume) {
+            fprintf(stderr, "[spawn-gate] Script delivered (%d bytes), resuming (pid=%d)\n",
+                    total_bytes, gated);
+            ptrace_resume(gated);
+            CommandRegistry::instance().gated_pid = -1;
         }
 
         fcntl(sock, F_SETFL, flags);

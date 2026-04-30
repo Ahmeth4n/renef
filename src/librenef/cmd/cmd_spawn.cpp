@@ -12,6 +12,13 @@
 #include <vector>
 #include <chrono>
 #include <signal.h>
+#include <sys/ioctl.h>
+#include <sys/ptrace.h>
+#include <sys/wait.h>
+
+#ifndef PTRACE_ATTACH
+#define PTRACE_ATTACH 16
+#endif
 
 #define RENEF_PAYLOAD_PATH "/data/local/tmp/libagent.so"
 
@@ -79,6 +86,8 @@ static SpawnParams parse_spawn_params(const char *cmd_buffer, size_t cmd_size) {
 }
 
 extern bool inject(int pid, const char *so_path);
+extern bool ptrace_inject(int pid, const char *so_path);
+extern bool ptrace_resume(int pid);
 
 class SpawnCommand : public CommandDispatcher {
 public:
@@ -158,13 +167,20 @@ public:
               << std::chrono::duration_cast<std::chrono::milliseconds>(after_pid - spawn_start).count()
               << "ms (pid=" << pid << ")" << std::endl;
 
-    bool is_injected = inject(pid, RENEF_PAYLOAD_PATH);
+    bool is_injected;
+    if (params.pause) {
+      // ptrace_inject: stops main thread before app code, loads agent.
+      // Combined with deferred hooks, this catches the first call to any
+      // function — even in not-yet-loaded libraries.
+      is_injected = ptrace_inject(pid, RENEF_PAYLOAD_PATH);
+    } else {
+      is_injected = inject(pid, RENEF_PAYLOAD_PATH);
+    }
 
     char response[64];
     if (is_injected) {
 
       // Close old agent connection BEFORE establishing new one
-      // (set_current_pid closes SocketHelper if PID changed)
       CommandRegistry::instance().set_current_pid(pid);
 
       int con_pid = sock.ensure_connection(pid);
@@ -175,15 +191,13 @@ public:
       sock.set_session_key(session_key);
 
       if (params.pause) {
-        // Spawn gate: freeze process AFTER agent is connected.
-        // The agent socket is open and buffered by kernel.
-        // Next exec command will SIGCONT before polling for response,
-        // so the agent reads buffered script data and installs hooks
-        // before the main thread reaches onCreate.
-        kill(pid, SIGSTOP);
+        // Main thread is ptrace-stopped. Script will be sent next.
+        // If target lib isn't loaded yet, agent defers the hook and polls
+        // for it. On ptrace_resume, main thread runs, lib loads, poll
+        // catches it, hook installed before first call.
         CommandRegistry::instance().gated_pid = pid;
-        std::cerr << "  [spawn-gate] process frozen (pid=" << pid
-                  << "), will resume on first exec" << std::endl;
+        std::cerr << "  [spawn-gate] main thread frozen (pid=" << pid
+                  << "), will resume on first exec/load" << std::endl;
       }
 
       snprintf(response, sizeof(response), "OK %d\n", pid);
