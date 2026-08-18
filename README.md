@@ -4,10 +4,10 @@
 
 **Dynamic instrumentation toolkit for Android ARM64**
 
-[![Release](https://img.shields.io/github/v/release/ahmeth4n/renef?style=flat-square&color=blue)](https://github.com/ahmeth4n/renef/releases)
-[![License](https://img.shields.io/github/license/ahmeth4n/renef?style=flat-square)](https://github.com/ahmeth4n/renef/blob/main/LICENSE)
-[![Stars](https://img.shields.io/github/stars/ahmeth4n/renef?style=flat-square)](https://github.com/ahmeth4n/renef/stargazers)
-[![Issues](https://img.shields.io/github/issues/ahmeth4n/renef?style=flat-square)](https://github.com/ahmeth4n/renef/issues)
+[![Release](https://img.shields.io/github/v/release/Byterialab/renef?style=flat-square&color=blue)](https://github.com/Byterialab/renef/releases)
+[![License](https://img.shields.io/github/license/Byterialab/renef?style=flat-square)](https://github.com/Byterialab/renef/blob/main/LICENSE)
+[![Stars](https://img.shields.io/github/stars/Byterialab/renef?style=flat-square)](https://github.com/Byterialab/renef/stargazers)
+[![Issues](https://img.shields.io/github/issues/Byterialab/renef?style=flat-square)](https://github.com/Byterialab/renef/issues)
 [![Docs](https://img.shields.io/badge/docs-renef.io-green?style=flat-square)](https://renef.io)
 [![HookShare](https://img.shields.io/badge/hooks-hook.renef.io-orange?style=flat-square)](https://hook.renef.io)
 
@@ -21,7 +21,7 @@ For comprehensive information, see [renef.io](https://renef.io).
 
 ### Prebuilt binaries
 
-Download the latest release from [GitHub Releases](https://github.com/ahmeth4n/renef/releases).
+Download the latest release from [GitHub Releases](https://github.com/Byterialab/renef/releases).
 
 ### Build from source
 
@@ -43,7 +43,7 @@ make install
 Requires [WSL](https://learn.microsoft.com/en-us/windows/wsl/install) with Ubuntu.
 
 ```cmd
-git clone https://github.com/ahmeth4n/renef.git
+git clone https://github.com/Byterialab/renef.git
 cd renef
 build_wsl.bat
 ```
@@ -82,7 +82,7 @@ sudo apt update
 sudo apt install -y build-essential cmake libreadline-dev git
 
 # Clone and build
-git clone https://github.com/ahmeth4n/renef.git
+git clone https://github.com/Byterialab/renef.git
 cd renef
 mkdir -p build && cd build
 cmake ..
@@ -93,7 +93,7 @@ make -j$(nproc)
 
 ```bash
 brew install cmake readline
-git clone https://github.com/ahmeth4n/renef.git
+git clone https://github.com/Byterialab/renef.git
 cd renef
 mkdir -p build && cd build
 cmake ..
