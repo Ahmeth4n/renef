@@ -662,6 +662,205 @@ static int lua_mem_patch(lua_State* L) {
     return 1;
 }
 
+/* Parse a protection string like "rwx", "r-x", "rw-" into PROT_* flags.
+ * Any r/w/x character enables the matching bit; everything else (including
+ * '-') is ignored. A flagless string yields PROT_NONE. */
+static int parse_prot(const char* s) {
+    int prot = PROT_NONE;
+    if (!s) return prot;
+    for (; *s; s++) {
+        switch (*s) {
+            case 'r': case 'R': prot |= PROT_READ;  break;
+            case 'w': case 'W': prot |= PROT_WRITE; break;
+            case 'x': case 'X': prot |= PROT_EXEC;  break;
+            default: break;
+        }
+    }
+    return prot;
+}
+
+/* Registry of Memory.alloc'd regions so Memory.free(addr) works without the
+ * caller having to remember the size (munmap needs it). Lua API calls are
+ * serialized under g_lua_mutex, so this plain array needs no extra locking. */
+#define MAX_ALLOCS 256
+typedef struct { void* addr; size_t size; } AllocEntry;
+static AllocEntry g_allocs[MAX_ALLOCS];
+static int g_alloc_count = 0;
+
+static void alloc_registry_add(void* addr, size_t size) {
+    if (g_alloc_count < MAX_ALLOCS) {
+        g_allocs[g_alloc_count].addr = addr;
+        g_allocs[g_alloc_count].size = size;
+        g_alloc_count++;
+    }
+    /* If the registry is full we simply don't track it; the region is still
+     * valid, the caller just has to pass an explicit size to Memory.free. */
+}
+
+/* Look up a tracked allocation by base address. Returns its size (>0) and
+ * removes it from the registry, or 0 if not tracked. */
+static size_t alloc_registry_take(void* addr) {
+    for (int i = 0; i < g_alloc_count; i++) {
+        if (g_allocs[i].addr == addr) {
+            size_t size = g_allocs[i].size;
+            g_allocs[i] = g_allocs[--g_alloc_count];
+            return size;
+        }
+    }
+    return 0;
+}
+
+/*
+ * Memory.alloc(size [, prot])
+ *
+ * Allocate a fresh anonymous region (the kernel rounds up to whole pages) and
+ * return its base address as an integer. Handy for building structs/buffers to
+ * feed back into hooks or Java calls. prot defaults to "rw-".
+ *
+ *   local p    = Memory.alloc(64)             -- 64 bytes, read/write
+ *   local code = Memory.alloc(0x1000, "rwx")  -- executable scratch page
+ *
+ * Returns: address (integer), or (nil, errmsg) on failure.
+ */
+static int lua_mem_alloc(lua_State* L) {
+    size_t size = (size_t)luaL_checkinteger(L, 1);
+    if (size == 0) {
+        lua_pushnil(L);
+        lua_pushstring(L, "Memory.alloc: size must be > 0");
+        return 2;
+    }
+
+    int prot = PROT_READ | PROT_WRITE;
+    if (lua_gettop(L) >= 2 && !lua_isnil(L, 2)) {
+        prot = parse_prot(luaL_checkstring(L, 2));
+    }
+
+    void* p = mmap(NULL, size, prot, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) {
+        LOGI("Memory.alloc: mmap failed for size=%zu", size);
+        lua_pushnil(L);
+        lua_pushstring(L, "Memory.alloc: mmap failed");
+        return 2;
+    }
+
+    alloc_registry_add(p, size);
+    LOGI("Memory.alloc: %zu bytes @ 0x%lx (prot=0x%x)", size, (unsigned long)p, prot);
+    lua_pushinteger(L, (lua_Integer)(uintptr_t)p);
+    return 1;
+}
+
+/*
+ * Memory.allocStr(str)
+ *
+ * Allocate a read/write region, copy a NUL-terminated C string into it, and
+ * return its base address. Convenient for feeding string arguments back into
+ * hooks or native/Java calls without hand-rolling alloc + write.
+ *
+ *   local p = Memory.allocStr("/system/bin/sh")
+ *
+ * Returns: address (integer), or (nil, errmsg) on failure. Free with
+ * Memory.free(p) like any other Memory.alloc region.
+ */
+static int lua_mem_alloc_str(lua_State* L) {
+    size_t len = 0;
+    const char* str = luaL_checklstring(L, 1, &len);
+    size_t size = len + 1;  /* include the NUL terminator */
+
+    void* p = mmap(NULL, size, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) {
+        LOGI("Memory.allocStr: mmap failed for size=%zu", size);
+        lua_pushnil(L);
+        lua_pushstring(L, "Memory.allocStr: mmap failed");
+        return 2;
+    }
+
+    memcpy(p, str, size);  /* str is NUL-terminated by Lua, so copy len+1 */
+    alloc_registry_add(p, size);
+    LOGI("Memory.allocStr: %zu bytes @ 0x%lx", size, (unsigned long)p);
+    lua_pushinteger(L, (lua_Integer)(uintptr_t)p);
+    return 1;
+}
+
+/*
+ * Memory.free(addr [, size])
+ *
+ * Release a region previously returned by Memory.alloc/allocStr. The size is
+ * looked up automatically from the allocation registry, so normally you just
+ * pass the address. Provide an explicit size only for regions the registry no
+ * longer tracks (e.g. it was full at alloc time) or ones you mmap'd yourself.
+ *
+ *   Memory.free(p)
+ *   Memory.free(p, 0x1000)
+ *
+ * Returns: true, or (false, errmsg) on failure.
+ */
+static int lua_mem_free(lua_State* L) {
+    void* addr = (void*)(uintptr_t)luaL_checkinteger(L, 1);
+
+    size_t size = alloc_registry_take(addr);
+    if (lua_gettop(L) >= 2 && !lua_isnil(L, 2)) {
+        size = (size_t)luaL_checkinteger(L, 2);  /* explicit size wins */
+    }
+
+    if (size == 0) {
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, "Memory.free: unknown allocation, pass an explicit size");
+        return 2;
+    }
+
+    if (munmap(addr, size) != 0) {
+        LOGI("Memory.free: munmap failed @ 0x%lx size=%zu", (unsigned long)addr, size);
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, "Memory.free: munmap failed");
+        return 2;
+    }
+
+    LOGI("Memory.free: 0x%lx size=%zu", (unsigned long)addr, size);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/*
+ * Memory.protect(addr, size, prot)
+ *
+ * Change page protection on an existing region. prot is a string of r/w/x
+ * characters (e.g. "rwx", "r-x", "rw-"). The range is expanded to page
+ * boundaries, matching Memory.patch.
+ *
+ *   Memory.protect(addr, 0x1000, "rwx")
+ *
+ * Returns: true, or (false, errmsg) on failure.
+ */
+static int lua_mem_protect(lua_State* L) {
+    uintptr_t address = (uintptr_t)luaL_checkinteger(L, 1);
+    size_t size = (size_t)luaL_checkinteger(L, 2);
+    int prot = parse_prot(luaL_checkstring(L, 3));
+
+    if (size == 0) {
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, "Memory.protect: size must be > 0");
+        return 2;
+    }
+
+    size_t page_size = sysconf(_SC_PAGESIZE);
+    uintptr_t page_start = address & ~(page_size - 1);
+    size_t region_size = ((address + size - page_start) + page_size - 1) & ~(page_size - 1);
+
+    if (mprotect((void*)page_start, region_size, prot) != 0) {
+        char err_msg[256];
+        snprintf(err_msg, sizeof(err_msg), "ERROR: mprotect failed at 0x%lx", (unsigned long)address);
+        send_to_cli(err_msg);
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, "mprotect failed");
+        return 2;
+    }
+
+    LOGI("Memory.protect: 0x%lx size=%zu prot=0x%x", (unsigned long)address, region_size, prot);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
 /*
  * hexdump(target [, length])
  *
@@ -828,6 +1027,18 @@ void register_memory_search_api(lua_State* L) {
 
     lua_pushcfunction(L, lua_mem_patch);
     lua_setfield(L, -2, "patch");
+
+    lua_pushcfunction(L, lua_mem_alloc);
+    lua_setfield(L, -2, "alloc");
+
+    lua_pushcfunction(L, lua_mem_protect);
+    lua_setfield(L, -2, "protect");
+
+    lua_pushcfunction(L, lua_mem_alloc_str);
+    lua_setfield(L, -2, "allocStr");
+
+    lua_pushcfunction(L, lua_mem_free);
+    lua_setfield(L, -2, "free");
 
     lua_pushcfunction(L, lua_mem_read_u8);
     lua_setfield(L, -2, "readU8");
