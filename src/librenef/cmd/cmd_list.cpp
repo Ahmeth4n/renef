@@ -22,60 +22,45 @@ public:
     }
 
     CommandResult dispatch(int client_fd, const char* cmd_buffer, size_t cmd_size) override {
-        int pid = CommandRegistry::instance().get_current_pid();
+        // List installed apps straight from the on-device package manager.
+        // No target PID / injection required — this mirrors `frida-ps -Uai`:
+        // it only needs renef_server running, not a spawned or attached app.
+        std::string filter = extract_filter(cmd_buffer, cmd_size);  // "~pattern" or ""
+        std::string pattern;
+        if (filter.size() > 1 && filter[0] == '~') {
+            pattern = filter.substr(1);
+        }
 
-        if (pid <= 0) {
-            const char* error_msg = "ERROR: No target PID set. Please attach first.\n";
+        FILE* fp = popen("pm list packages 2>/dev/null", "r");
+        if (!fp) {
+            const char* error_msg = "ERROR: Failed to query package manager\n";
             write(client_fd, error_msg, strlen(error_msg));
-            return CommandResult(false, "No target PID set");
+            return CommandResult(false, "pm list packages failed");
         }
 
-        SocketHelper& socket_helper = CommandRegistry::instance().get_socket_helper();
-        int sock = socket_helper.ensure_connection(pid);
-
-        if (sock < 0) {
-            const char* error_msg = "ERROR: Failed to create socket\n";
-            write(client_fd, error_msg, strlen(error_msg));
-            return CommandResult(false, "Socket creation failed");
-        }
-
-        std::string clean_cmd(cmd_buffer, cmd_size);
-        while (!clean_cmd.empty() && (clean_cmd.back() == '\n' || clean_cmd.back() == '\r' || clean_cmd.back() == ' ' || clean_cmd.back() == '\0')) {
-            clean_cmd.pop_back();
-        }
-
-        std::string filter = extract_filter(clean_cmd.c_str(), clean_cmd.length());
-        std::string command = build_agent_command("la", filter);
-        socket_helper.send_data(command.c_str(), command.length());
-
-        char buffer[4096];
-        ssize_t n;
-        int agent_fd = socket_helper.get_socket_fd();
-
-        while (true) {
-            fd_set read_fds;
-            FD_ZERO(&read_fds);
-            FD_SET(agent_fd, &read_fds);
-
-            struct timeval timeout;
-            timeout.tv_sec = 0;
-            timeout.tv_usec = 200000;
-
-            int select_result = select(agent_fd + 1, &read_fds, NULL, NULL, &timeout);
-
-            if (select_result < 0) {
-                break;
-            } else if (select_result == 0) {
-                break;
+        char line[512];
+        int count = 0;
+        while (fgets(line, sizeof(line), fp)) {
+            if (strncmp(line, "package:", 8) != 0) {
+                continue;
             }
-
-            n = socket_helper.receive_data(buffer, sizeof(buffer));
-            if (n <= 0) {
-                break;
+            char* pkg = line + 8;
+            size_t len = strlen(pkg);
+            if (len > 0 && pkg[len - 1] == '\n') {
+                pkg[--len] = '\0';
             }
-
-            write(client_fd, buffer, n);
+            if (!pattern.empty() && strstr(pkg, pattern.c_str()) == nullptr) {
+                continue;
+            }
+            write(client_fd, pkg, len);
+            write(client_fd, "\n", 1);
+            count++;
         }
+        pclose(fp);
+
+        char summary[64];
+        int slen = snprintf(summary, sizeof(summary), "\nTotal: %d packages\n", count);
+        write(client_fd, summary, slen);
 
         return CommandResult(true, "List apps successful");
     }
